@@ -3,6 +3,7 @@
 use strict;
 use warnings;
 
+use autodie;
 use English qw/-no_match_vars/;
 use Text::CSV_XS;
 use Time::Piece;
@@ -22,6 +23,7 @@ Readonly my %DEFAULTS => (
         'printer_path' => q|//153.91.87.132/HP DeskJet 712C|,
         'field_order'=> [qw/T33 T34 T41 T48 T32 S1/],
         'print_with_word' => 1,
+        'header_file' => 'header.txt',
     },
 );
 Readonly my $CONFIG_FILE          => q/moseley-log-beautifier.ini/;
@@ -38,7 +40,7 @@ sub main {
     # FIXME: figure out if I'm opening the file dated the night before or what.
     my $logfile = File::Spec->catfile($CONFIG->{'_'}{'transmitter_log_dir'}, q/Log.txt/);
 
-    open my $fh, '<', $logfile or croak "Can't open $logfile: $!";
+    open my $fh, '<', $logfile;
     my $processed_records = _process_transmitter_log($fh);
     close $fh;
    
@@ -50,14 +52,7 @@ sub main {
 sub print_processed_logs {
     my $processed_records = shift;
 
-    $DB::single = 1;
     my $tabular_data = _format_tabular($processed_records);
-    open my $fh, ">out.txt" or die "Can't open filehandle: $!";
-    my $csv = Text::CSV_XS->new({'eol' => qq/\n/});
-    for my $row (@$tabular_data) {
-        $csv->print($fh, $row);
-    }
-    close $fh;
 
     if ($CONFIG->{'_'}{'print_with_word'}) {
         _print_with_word($tabular_data);
@@ -77,7 +72,7 @@ sub _format_tabular {
     
     my @output_fields = map { $_->{'Description'} } @{$CHANNELS}{ @{ $CONFIG->{'_'}{'field_order'} } };
 
-    my @tabular = ([q|Date/Time|, @output_fields]); # initialize w/ column headings
+    my @tabular = ([q|Time|, @output_fields]); # initialize w/ column headings
     foreach my $timestamp (sort keys %{$horizontal_records}) {
         my $record = $horizontal_records->{$timestamp};
         push @tabular, [$timestamp, @{$record}{@output_fields}];
@@ -95,6 +90,7 @@ sub _print_with_word {
         croak(sprintf(q/Usage: %s <arrayref>/, (caller(0))[3]));
     }
 
+    my $header = _read_header($CONFIG->{'_'}{'header_file'});
     my $csv = Text::CSV_XS->new({ sep_char => ',' });
 
     my @column_headings = @{shift $print_data};
@@ -122,6 +118,16 @@ sub _print_with_word {
     return 1;
 }
 
+sub _read_header {
+    my $header_file = shift;
+
+    open my $fh, '<', $header_file;
+    my $text = do { local ($/); <$fh> };
+    close $fh;
+    
+    return $text;
+}
+
 sub _process_transmitter_log {
     my $fh = shift;
    
@@ -138,8 +144,7 @@ sub _process_transmitter_log {
         my $key = $vertical_record->{'Type of Signal'} . $vertical_record->{'Channel number'};
         my $field_name = $CHANNELS->{$key}{'Description'} || qq/Channel $vertical_record->{'Channel number'}/;
 
-        my $timestamp = Time::Piece->strptime(qq/$date $time/, q|%m/%d/%Y %H:%M:%S|)->strftime(q/%Y-%m-%d %H:%M:%S/);
-        $horizontal_records->{$timestamp}{$field_name} = $value;
+        $horizontal_records->{$time}{$field_name} = $value;
     }
     return $horizontal_records;
 }

@@ -91,7 +91,7 @@ sub _print_with_word {
     }
 
     my $header = _read_header($CONFIG->{'_'}{'header_file'});
-    my $csv = Text::CSV_XS->new({ sep_char => ',' });
+    my $csv = Text::CSV_XS->new({ 'sep_char' => ',', 'quote_char' => undef });
 
     my @column_headings = @{shift $print_data};
     my @rows = @{$print_data};
@@ -99,6 +99,14 @@ sub _print_with_word {
     my $word = Win32::OLE->new('Word.Application', 'Quit');
     my $doc = $word->Documents->Add({'Visible' => 1});
     my $select = $word->Selection;
+
+    $select->TypeText({'Text' => qq/$header\n\n/,});
+    $select->ParagraphFormat->{'LineSpacingRule'} = wdLineSpaceSingle;
+    $select->BoldRun();
+    $select->TypeText({'Text' => localtime->strftime('%a %b %d %Y')});
+    $select->BoldRun();
+    $select->ParagraphFormat->{'Alignment'} = wdAlignParagraphRight;
+
     $csv->combine(@column_headings);
     $select->InsertAfter($csv->string);
     $select->InsertParagraphAfter;

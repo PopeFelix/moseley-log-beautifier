@@ -16,6 +16,11 @@ use File::Spec;
 use Clone qw/clone/;
 use Cwd;
 
+# Revision: $Revision$
+# Source: $Source$
+# Author: $Author$
+# Date: $Date$
+
 Readonly my %DEFAULTS => (
     '_' => {
         'channels_file' => q/channels.ini/,

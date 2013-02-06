@@ -5,12 +5,11 @@
 #
 # Original author: Kit Peters <cpeters@ucmo.edu>
 #
-# $Header$
+# Base URL $URL$
 # $Id$
-# $URL$
 # $Rev$
-# $Author$
-# $Date$
+# Last modified by $Author$
+# Last modified $Date$
 
 use strict;
 use warnings;
@@ -27,11 +26,6 @@ use Carp qw/carp croak/;
 use File::Spec;
 use Clone qw/clone/;
 use Cwd;
-
-# Revision: $Revision$
-# Source: $Source$
-# Author: $Author$
-# Date: $Date$
 
 Readonly my %DEFAULTS => (
     '_' => {

@@ -1,4 +1,9 @@
-; configuration file for moseley-log-beautifier.pl
+; example configuration file for moseley-log-beautifier.pl
+; $Id$
+; $URL$
+; $Rev$
+; $Author$
+; $Date$
 
 ; Location of the channel definitions file
 channels_file=channels.ini

@@ -1,5 +1,17 @@
 #!/usr/bin/perl
+
+# A script to beautify automatic log output from Moseley CommServer by 
+# presenting the supplied data in a more human readable form.
 #
+# Original author: Kit Peters <cpeters@ucmo.edu>
+#
+# $Header$
+# $Id$
+# $URL$
+# $Rev$
+# $Author$
+# $Date$
+
 use strict;
 use warnings;
 

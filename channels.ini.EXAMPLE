@@ -1,3 +1,16 @@
+; Example channel configuration file.  Channels should take the following form:
+; [Channel <T|S><channel number>]
+;     Description=<Description>
+;     Units=<Degrees|Watts|Amps|Volts|Percentage|None>
+; 
+; Use 'T' for telemetry channels, or 'S' for status channels, e.g. 'T33' for telemetry channel 33
+;
+; $Id$
+; $URL$
+; $Rev$
+; $Author$
+; $Date$
+
 [Channel T32]
     Description=Building Temp
     Units=Degrees

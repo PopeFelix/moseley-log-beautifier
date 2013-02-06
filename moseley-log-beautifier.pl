@@ -145,12 +145,12 @@ sub _print_with_word {
     my $doc = $word->Documents->Add();
     my $select = $word->Selection;
 
+    $select->ParagraphFormat->{'SpaceAfter'} = 0;
     $select->TypeText({'Text' => qq/$header\n\n/,});
-    $select->ParagraphFormat->{'LineSpacingRule'} = wdLineSpaceSingle;
-    $select->BoldRun();
-    $select->TypeText({'Text' => Time::Piece->strptime($args->{'log_date'}, q|%m/%d/%Y %H:%M:%S|)->strftime('%A %B %d %Y')});
     $select->BoldRun();
     $select->ParagraphFormat->{'Alignment'} = wdAlignParagraphRight;
+    $select->TypeText({'Text' => Time::Piece->strptime($args->{'log_date'}, q|%m/%d/%Y %H:%M:%S|)->strftime(qq/%A %B %d %Y\n\n/)});
+    $select->BoldRun();
 
     $csv->combine(@column_headings);
     $select->InsertAfter($csv->string);
@@ -163,8 +163,11 @@ sub _print_with_word {
 
     my $table = $select->ConvertToTable({'Separator' => wdSeparateByCommas});
     $table->Rows->First->Range->Font->{'Bold'} = 1;
+    $table->Rows->First->Range->ParagraphFormat->{'Alignment'} = wdAlignParagraphCenter;
     @{$table->Rows->First->Borders(wdBorderBottom)}{qw/LineStyle LineWidth/} = (wdLineStyleDouble, wdLineWidth100pt);
-    $select->TypeText({'Text' => qq/\n$footer/});
+    $doc->Paragraphs->Last->Format->{'Alignment'} = wdAlignParagraphLeft;
+    $doc->Paragraphs->Last->Format->{'SpaceAfter'} = 0;
+    $doc->Paragraphs->Last->Range->InsertAfter({'Text' => qq/\n$footer/}); 
     $doc->SaveAs({ 'Filename' => Cwd::getcwd . '/test.doc' });
 #    $doc->PrintOut();
     $doc->Close({ 'SaveChanges' => wdDoNotSaveChanges });

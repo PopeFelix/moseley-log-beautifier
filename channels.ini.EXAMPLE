@@ -36,7 +36,7 @@
 
 [Channel T41]
     Description=V1 Fwd. Power
-    Units=Watts
+    Units=Percentage
 
 [Channel T42]
     Description=V2 Filament E
@@ -64,7 +64,7 @@
 
 [Channel T48]
     Description=V2 Fwd. Power
-    Units=Watts
+    Units=Percentage
 
 [Channel S1]
     Description=Tower Lights OK

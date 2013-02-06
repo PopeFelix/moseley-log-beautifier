@@ -71,10 +71,35 @@ sub _format_tabular {
     }
     
     my @output_fields = map { $_->{'Description'} } @{$CHANNELS}{ @{ $CONFIG->{'_'}{'field_order'} } };
-
+    my $output_formats = {};
+    foreach my $key (keys %{$CHANNELS}) {
+        my $field_name = $CHANNELS->{$key}{'Description'};
+        my $units = $CHANNELS->{$key}{'Units'};
+        $output_formats->{$field_name} = $units;
+    }
     my @tabular = ([q|Time|, @output_fields]); # initialize w/ column headings
     foreach my $timestamp (sort keys %{$horizontal_records}) {
         my $record = $horizontal_records->{$timestamp};
+       
+        # Add units to the tabular data
+        foreach my $field_name (@output_fields) {
+            my $unit = $output_formats->{$field_name};
+            if ($unit =~ /none/ixsm) {
+                next;
+            }
+            elsif ($unit =~ /bool/ixsm) {
+                $record->{$field_name} = ($record->{$field_name}) ? 'YES' : 'NO';
+            } 
+            elsif ($unit =~ /percent/ixsm)  {
+                $record->{$field_name} .= '%';
+            }
+            elsif ($unit =~ /deg/ixsm) {
+                $record->{$field_name} .= qq/\xF8/; # degree symbol
+            }
+            else {
+                $record->{$field_name} .= uc(substr($unit, 0, 1));
+            }
+        }
         push @tabular, [$timestamp, @{$record}{@output_fields}];
     }
 

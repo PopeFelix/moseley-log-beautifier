@@ -24,6 +24,7 @@ Readonly my %DEFAULTS => (
         'field_order'=> [qw/T33 T34 T41 T48 T32 S1/],
         'print_with_word' => 1,
         'header_file' => 'header.txt',
+        'footer_file' => 'footer.txt',
     },
 );
 Readonly my $CONFIG_FILE          => q/moseley-log-beautifier.ini/;
@@ -38,27 +39,36 @@ main();
 
 sub main {
     # FIXME: figure out if I'm opening the file dated the night before or what.
-    my $logfile = File::Spec->catfile($CONFIG->{'_'}{'transmitter_log_dir'}, q/Log.txt/);
+    my $logfile = $ARGV[0] || File::Spec->catfile($CONFIG->{'_'}{'transmitter_log_dir'}, q/Log.txt/);
 
     open my $fh, '<', $logfile;
     my $processed_records = _process_transmitter_log($fh);
     close $fh;
    
-    print_processed_logs($processed_records);
+    my $log_date = [sort keys %{$processed_records}]->[0];
+    print_processed_logs({ 'log_date' => $log_date, 'log_data' => $processed_records});
     return 1;
 }
 
-# TODO: make this create a Word doc or text document and print it out
 sub print_processed_logs {
-    my $processed_records = shift;
+    my $args = shift;
+    
+    if (ref $args ne q/HASH/) {
+        croak(sprintf(q/Usage: %s <hashref>/, (caller(0))[3]));
+    }
+    foreach my $required_key (qw/log_date log_data/) {
+        if (!$args->{$required_key}) {
+            croak(qq/Missing required key '$required_key' in args/);
+        }
+    }
 
-    my $tabular_data = _format_tabular($processed_records);
+    my $tabular_data = _format_tabular($args->{'log_data'});
 
     if ($CONFIG->{'_'}{'print_with_word'}) {
-        _print_with_word($tabular_data);
+        _print_with_word({'log_date' => $args->{'log_date'}, 'data' => $tabular_data});
     } 
     else {
-        _print_as_text($tabular_data);
+        _print_as_text({'log_date' => $args->{'log_date'}, 'data' => $tabular_data});
     }
     return 1;
 }
@@ -80,7 +90,8 @@ sub _format_tabular {
     my @tabular = ([q|Time|, @output_fields]); # initialize w/ column headings
     foreach my $timestamp (sort keys %{$horizontal_records}) {
         my $record = $horizontal_records->{$timestamp};
-       
+      
+        (undef, my $time) = split /\s/, $timestamp, 2; # throw away the date portion of the timestamp
         # Add units to the tabular data
         foreach my $field_name (@output_fields) {
             my $unit = $output_formats->{$field_name};
@@ -94,41 +105,50 @@ sub _format_tabular {
                 $record->{$field_name} .= '%';
             }
             elsif ($unit =~ /deg/ixsm) {
-                $record->{$field_name} .= qq/\xF8/; # degree symbol
+                $record->{$field_name} .= qq/\xB0/; # degree symbol - NOTE: UTF-8
             }
             else {
                 $record->{$field_name} .= uc(substr($unit, 0, 1));
             }
         }
-        push @tabular, [$timestamp, @{$record}{@output_fields}];
+        push @tabular, [$time, @{$record}{@output_fields}];
     }
 
     return \@tabular;
 }
 
-# Expects an arrayref of arrayrefs.  First line is treated as column headings, following lines are treated as data.  
-# A single horizontal rule will be added between the column headings and the data.
+# Expects arguments as a hashref with the keys:
+# # log_date: Date of the log
+# # data: an arrayref of arrayrefs.  First line is treated as column headings, following lines are treated as data.  
+#
+# A double horizontal rule will be added between the column headings and the data.
 sub _print_with_word {
-    my $print_data = shift;
-
-    if (ref $print_data ne q/ARRAY/) {
-        croak(sprintf(q/Usage: %s <arrayref>/, (caller(0))[3]));
+    my $args = shift;
+    
+    if (ref $args ne q/HASH/) {
+        croak(sprintf(q/Usage: %s <hashref>/, (caller(0))[3]));
+    }
+    foreach my $required_key (qw/log_date data/) {
+        if (!$args->{$required_key}) {
+            croak(qq/Missing required key '$required_key' in args/);
+        }
     }
 
-    my $header = _read_header($CONFIG->{'_'}{'header_file'});
-    my $csv = Text::CSV_XS->new({ 'sep_char' => ',', 'quote_char' => undef });
+    my $header = _slurp_file($CONFIG->{'_'}{'header_file'});
+    my $footer = _slurp_file($CONFIG->{'_'}{'footer_file'});
+    my $csv = Text::CSV_XS->new({ 'sep_char' => ',', 'binary' => 1, 'quote_char' => undef });
 
-    my @column_headings = @{shift $print_data};
-    my @rows = @{$print_data};
+    my @column_headings = @{shift $args->{'data'}};
+    my @rows = @{$args->{'data'}};
 
     my $word = Win32::OLE->new('Word.Application', 'Quit');
-    my $doc = $word->Documents->Add({'Visible' => 1});
+    my $doc = $word->Documents->Add();
     my $select = $word->Selection;
 
     $select->TypeText({'Text' => qq/$header\n\n/,});
     $select->ParagraphFormat->{'LineSpacingRule'} = wdLineSpaceSingle;
     $select->BoldRun();
-    $select->TypeText({'Text' => localtime->strftime('%a %b %d %Y')});
+    $select->TypeText({'Text' => Time::Piece->strptime($args->{'log_date'}, q|%m/%d/%Y %H:%M:%S|)->strftime('%A %B %d %Y')});
     $select->BoldRun();
     $select->ParagraphFormat->{'Alignment'} = wdAlignParagraphRight;
 
@@ -144,6 +164,7 @@ sub _print_with_word {
     my $table = $select->ConvertToTable({'Separator' => wdSeparateByCommas});
     $table->Rows->First->Range->Font->{'Bold'} = 1;
     @{$table->Rows->First->Borders(wdBorderBottom)}{qw/LineStyle LineWidth/} = (wdLineStyleDouble, wdLineWidth100pt);
+    $select->TypeText({'Text' => qq/\n$footer/});
     $doc->SaveAs({ 'Filename' => Cwd::getcwd . '/test.doc' });
 #    $doc->PrintOut();
     $doc->Close({ 'SaveChanges' => wdDoNotSaveChanges });
@@ -151,10 +172,10 @@ sub _print_with_word {
     return 1;
 }
 
-sub _read_header {
-    my $header_file = shift;
+sub _slurp_file {
+    my $file = shift;
 
-    open my $fh, '<', $header_file;
+    open my $fh, '<', $file;
     my $text = do { local ($/); <$fh> };
     close $fh;
     
@@ -177,14 +198,14 @@ sub _process_transmitter_log {
         my $key = $vertical_record->{'Type of Signal'} . $vertical_record->{'Channel number'};
         my $field_name = $CHANNELS->{$key}{'Description'} || qq/Channel $vertical_record->{'Channel number'}/;
 
-        $horizontal_records->{$time}{$field_name} = $value;
+        my $timestamp = qq/$date $time/;
+        $horizontal_records->{$timestamp}{$field_name} = $value;
     }
     return $horizontal_records;
 }
 
 sub get_channels {
     my $channels_file = shift;
-    $DB::single = 1;   
     my $channels_config_final = {};
     my $channels_config = Config::Tiny->read($channels_file);
     foreach my $channel (keys %$channels_config) {
@@ -203,7 +224,6 @@ sub get_configuration {
     if (!$config) {
         croak(qq/Failed to read configuration file $config_file: / . Config::Tiny->errstr);
     }
-    $DB::single = 1;
     if ($config->{'_'}{'field_order'}) {
         my @field_order = split /\s+/, $config->{'_'}{'field_order'};
         $config->{'_'}{'field_order'} = \@field_order;

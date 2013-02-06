@@ -10,5 +10,7 @@ field_order=T33 T34 T41 T48 T32 S1
 printer_path=//153.91.87.132/HP DeskJet 712C
 ; If this is true, then MS Word will be used to generate output and output sent to the default printer on the host running this script
 print_with_word=1
-
+; Contents of this file will be printed at the top of every log
 header_file=header.txt
+; Contents of this file will be printed at the bottom of every log
+footer_file=header.txt

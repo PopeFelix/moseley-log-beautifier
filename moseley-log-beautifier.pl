@@ -28,6 +28,7 @@ use Carp qw/carp croak/;
 use File::Spec;
 use Clone qw/clone/;
 use Cwd;
+use Encode;
 
 our $VERSION = 1.0;
 
@@ -206,11 +207,11 @@ sub _print_with_word {
     $select->BoldRun();
 
     $csv->combine(@column_headings);
-    $select->InsertAfter( $csv->string );
+    $select->InsertAfter( Encode::encode( 'UTF-8', $csv->string ) );
     $select->InsertParagraphAfter;
     for my $row (@rows) {
         $csv->combine( @{$row} );
-        $select->InsertAfter( $csv->string );
+        $select->InsertAfter( Encode::encode( 'UTF-8', $csv->string ) );
         $select->InsertParagraphAfter;
     }
     my $table =
@@ -223,9 +224,10 @@ sub _print_with_word {
     $doc->Paragraphs->Last->Format->{'Alignment'}  = wdAlignParagraphLeft;
     $doc->Paragraphs->Last->Format->{'SpaceAfter'} = 0;
     $doc->Paragraphs->Last->Range->InsertAfter( { 'Text' => qq/\n$footer/ } );
-    $doc->SaveAs( { 'Filename' => Cwd::getcwd . '/test.doc' } );
 
-    #    $doc->PrintOut();
+    #$doc->SaveAs( { 'Filename' => Cwd::getcwd . '/test.doc' } );
+
+    $doc->PrintOut();
     $doc->Close( { 'SaveChanges' => wdDoNotSaveChanges } );
     $word->Quit();
     ## use critic

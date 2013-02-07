@@ -31,8 +31,8 @@ use Cwd;
 
 our $VERSION = 1.0;
 
-Readonly my $FUNCTION_NAME_POSITION = 3;
-Readonly my %DEFAULTS => (
+Readonly my $FUNCTION_NAME_POSITION => 3;
+Readonly my %DEFAULTS               => (
     '_' => {
         'channels_file'       => q/channels.ini/,
         'transmitter_log_dir' => q|Z:|,
@@ -109,7 +109,8 @@ sub _format_tabular {
         );
     }
 
-    my @output_fields = map { $_->{'Description'} }
+    my @output_fields =
+      map { $_->{'Description'} }
       @{$CHANNELS}{ @{ $CONFIG->{'_'}{'field_order'} } };
     my $output_formats = {};
     foreach my $key ( keys %{$CHANNELS} ) {
@@ -123,7 +124,7 @@ sub _format_tabular {
         my $horizontal_record = $horizontal_records->{$timestamp};
 
         # Extract the time portion of the timestamp
-        my ($time) = $timestamp =~ m/(\d{2}:\d{2}:\d{2}/xsm;
+        my ($time) = $timestamp =~ m/(\d{2}:\d{2}:\d{2})/xsm;
 
         # Add units to the tabular data
         foreach my $field_name (@output_fields) {
@@ -183,6 +184,7 @@ sub _print_with_word {
     my @column_headings = @{ shift $args->{'data'} };
     my @rows            = @{ $args->{'data'} };
 
+    Win32::OLE->Option( 'CP' => Win32::OLE::CP_UTF8 );
     my $word   = Win32::OLE->new( 'Word.Application', 'Quit' );
     my $doc    = $word->Documents->Add();
     my $select = $word->Selection;
@@ -198,7 +200,7 @@ sub _print_with_word {
         {
             'Text' => Time::Piece->strptime(
                 $args->{'log_date'}, q|%m/%d/%Y %H:%M:%S|
-            )->strftime(qq/%A %B %d %Y\n\n/)
+              )->strftime(qq/%A %B %d %Y\n\n/)
         }
     );
     $select->BoldRun();
@@ -211,14 +213,13 @@ sub _print_with_word {
         $select->InsertAfter( $csv->string );
         $select->InsertParagraphAfter;
     }
-
     my $table =
       $select->ConvertToTable( { 'Separator' => wdSeparateByCommas } );
     $table->Rows->First->Range->Font->{'Bold'} = 1;
     $table->Rows->First->Range->ParagraphFormat->{'Alignment'} =
       wdAlignParagraphCenter;
-    @{ $table->Rows->First->Borders(wdBorderBottom) }{qw/LineStyle LineWidth/}
-      = ( wdLineStyleDouble, wdLineWidth100pt );
+    @{ $table->Rows->First->Borders(wdBorderBottom) }{qw/LineStyle LineWidth/} =
+      ( wdLineStyleDouble, wdLineWidth100pt );
     $doc->Paragraphs->Last->Format->{'Alignment'}  = wdAlignParagraphLeft;
     $doc->Paragraphs->Last->Format->{'SpaceAfter'} = 0;
     $doc->Paragraphs->Last->Range->InsertAfter( { 'Text' => qq/\n$footer/ } );
@@ -255,7 +256,8 @@ sub _process_transmitter_log {
         my $date = $vertical_record->{'Date'} . q{/} . localtime->year;
         my $value =
           $vertical_record->{'Current Value'} + 0;   # coerce this into a number
-        my $key = $vertical_record->{'Type of Signal'}
+        my $key =
+            $vertical_record->{'Type of Signal'}
           . $vertical_record->{'Channel number'};
         my $field_name = $CHANNELS->{$key}{'Description'}
           || qq/Channel $vertical_record->{'Channel number'}/;

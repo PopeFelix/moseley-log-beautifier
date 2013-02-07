@@ -30,7 +30,7 @@ use Clone qw/clone/;
 use Cwd;
 use Encode;
 
-our $VERSION = 1.0;
+our $VERSION = 1.01;
 
 Readonly my $FUNCTION_NAME_POSITION => 3;
 Readonly my %DEFAULTS               => (
@@ -143,8 +143,7 @@ sub _format_tabular {
                     $horizontal_record->{$field_name} .= q{%};
                 }
                 when (/^deg/ixsm) {
-                    $horizontal_record->{$field_name} .=
-                      qq/\N{DEGREE SIGN}/;    # NOTE: UTF-8
+                    $horizontal_record->{$field_name} .= q{°};
                 }
                 default {
                     $horizontal_record->{$field_name} .= uc substr $unit, 0, 1;
@@ -179,13 +178,9 @@ sub _print_with_word {
 
     my $header = _slurp_file( $CONFIG->{'_'}{'header_file'} );
     my $footer = _slurp_file( $CONFIG->{'_'}{'footer_file'} );
-    my $csv    = Text::CSV_XS->new(
-        { 'sep_char' => q/,/, 'binary' => 1, 'quote_char' => undef } );
+    
+    my @rows = @{ $args->{'data'} };
 
-    my @column_headings = @{ shift $args->{'data'} };
-    my @rows            = @{ $args->{'data'} };
-
-    Win32::OLE->Option( 'CP' => Win32::OLE::CP_UTF8 );
     my $word   = Win32::OLE->new( 'Word.Application', 'Quit' );
     my $doc    = $word->Documents->Add();
     my $select = $word->Selection;
@@ -206,16 +201,17 @@ sub _print_with_word {
     );
     $select->BoldRun();
 
-    $csv->combine(@column_headings);
-    $select->InsertAfter( Encode::encode( 'UTF-8', $csv->string ) );
-    $select->InsertParagraphAfter;
-    for my $row (@rows) {
-        $csv->combine( @{$row} );
-        $select->InsertAfter( Encode::encode( 'UTF-8', $csv->string ) );
-        $select->InsertParagraphAfter;
+    my $range = $select->Range;
+    my $table = $doc->Tables->Add( $range, scalar @rows, scalar @{ $rows[0] } );
+    for my $rownum ( 0 .. $#rows ) {
+        for my $colnum ( 0 .. $#{ $rows[$rownum] } ) {
+            my @cellpos = ( $rownum + 1, $colnum + 1 );
+            my $data = $rows[$rownum][$colnum];
+            $table->Cell(@cellpos)->Range->{'Text'} = $data;
+            1;
+        }
     }
-    my $table =
-      $select->ConvertToTable( { 'Separator' => wdSeparateByCommas } );
+
     $table->Rows->First->Range->Font->{'Bold'} = 1;
     $table->Rows->First->Range->ParagraphFormat->{'Alignment'} =
       wdAlignParagraphCenter;
@@ -234,9 +230,34 @@ sub _print_with_word {
     return 1;
 }
 
+sub _print_as_text {
+    my $args = shift;
+
+    if ( ref $args ne q/HASH/ ) {
+        croak(
+            sprintf q/Usage: %s <hashref>/,
+            ( caller 0 )[$FUNCTION_NAME_POSITION]
+        );
+    }
+    foreach my $required_key (qw/log_date data/) {
+        if ( !$args->{$required_key} ) {
+            croak(qq/Missing required key '$required_key' in args/);
+        }
+    }
+
+    my $header = _slurp_file( $CONFIG->{'_'}{'header_file'} );
+    my $footer = _slurp_file( $CONFIG->{'_'}{'footer_file'} );
+    my $csv    = Text::CSV_XS->new(
+        { 'sep_char' => q/,/, 'binary' => 1, 'quote_char' => undef } );
+
+    my @column_headings = @{ shift $args->{'data'} };
+    my @rows            = @{ $args->{'data'} };
+
+    return 1;
+}
+
 sub _slurp_file {
     my $file = shift;
-
     open my $fh, '<', $file;
     my $text = do { local $INPUT_RECORD_SEPARATOR = undef; <$fh> };
     close $fh;

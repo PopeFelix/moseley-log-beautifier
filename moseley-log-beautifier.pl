@@ -29,8 +29,10 @@ use File::Spec;
 use Clone qw/clone/;
 use Cwd;
 use Encode;
+use File::Copy;
+use Perl6::Form;
 
-our $VERSION = 1.1;
+our $VERSION = 1.11;
 
 Readonly my $FUNCTION_NAME_POSITION => 3;
 Readonly my %DEFAULTS               => (
@@ -61,7 +63,7 @@ Readonly my $CHANNELS =>
 
 main();
 
-1;
+exit 0;
 
 sub main {
     my $transmitter_log = $ARGV[0]
@@ -69,12 +71,18 @@ sub main {
         q/Log.txt/ );
     _log_write(qq/Begin run on file "$transmitter_log"/);
 
-    open my $fh, '<', $transmitter_log;
-    my $processed_records = eval { _process_transmitter_log($fh); } or do {
-        _log_write(qq/Failed to process TX logs: $EVAL_ERROR/);
-        croak($EVAL_ERROR);
-    };
-    close $fh;
+    my $fh;
+    eval {
+        open $fh, '<', $transmitter_log;
+        1;
+    } or _error_exit(qq/Failed to open TX log: $EVAL_ERROR/);
+
+    my $processed_records = eval { _process_transmitter_log($fh); }
+      or _error_exit(qq/Failed to process TX logs: $EVAL_ERROR/);
+    eval {
+        close $fh;
+        1;
+    } or _error_exit(qq/Failed to close TX log: $EVAL_ERROR/);
 
     my $log_date     = [ sort keys %{$processed_records} ]->[0];
     my $record_count = eval {
@@ -82,17 +90,17 @@ sub main {
             { 'log_date' => $log_date, 'log_data' => $processed_records } );
     };
     if ( !defined $record_count ) {
-        _log_write(qq/Failed to print TX logs: $EVAL_ERROR/);
-        croak($EVAL_ERROR);
+        _error_exit(qq/Failed to print TX logs: $EVAL_ERROR/);
     }
     elsif ( $record_count == 0 ) {
-        my $message =
-qq/Zero horizontal records created from raw TX log file "$transmitter_log"/;
-        _log_write($message);
-        croak($message);
+        _error_exit(
+qq/Zero horizontal records created from raw TX log file "$transmitter_log"/
+        );
     }
     else {
-        _log_write(qq/TX logs processed successfully for $log_date.  $record_count records./);
+        _log_write(
+qq/TX logs processed successfully for $log_date.  $record_count records./
+        );
     }
     return 1;
 }
@@ -280,6 +288,18 @@ sub _print_as_text {
     my @column_headings = @{ shift $args->{'data'} };
     my @rows            = @{ $args->{'data'} };
 
+    my $header_format = join q{|}, (q/{]]]][[[[}/) x scalar @column_headings;
+    my $field_format  = join q{|}, (q/{]]]]]]]]}/) x scalar @column_headings;
+
+    # formatting starts with headers followed by double line
+    my @format_data = (
+        $header_format, @column_headings, q/========/ x scalar @column_headings,
+    );
+    foreach my $row (@rows) {
+        push @format_data, ( $field_format, @{$row} );
+    }
+    my $text = form @format_data;
+
     return 1;
 }
 
@@ -328,9 +348,18 @@ sub _log_write {
     my $message = shift;
     open my $fh, q{>>}, $CONFIG->{'_'}{'log_file'};
     my $timestamp = localtime->strftime('%c');
-    print {$fh} qq/[$timestamp] $message\n/;
+    my $ret       = $fh->print(qq/[$timestamp] $message\n/);
+    if ( !$ret ) {
+        croak(q/Failed to print to log/);
+    }
     close $fh;
     return 1;
+}
+
+sub _error_exit {
+    my $message = shift;
+    _log_write($message);
+    croak($message);
 }
 
 sub get_channels {
@@ -375,4 +404,3 @@ sub get_configuration {
     }
     return $config;
 }
-1;

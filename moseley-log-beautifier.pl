@@ -30,7 +30,7 @@ use Clone qw/clone/;
 use Cwd;
 use Encode;
 
-our $VERSION = 1.01;
+our $VERSION = 1.1;
 
 Readonly my $FUNCTION_NAME_POSITION => 3;
 Readonly my %DEFAULTS               => (
@@ -42,33 +42,58 @@ Readonly my %DEFAULTS               => (
         'print_with_word'     => 1,
         'header_file'         => 'header.txt',
         'footer_file'         => 'footer.txt',
+        'log_file'            => 'log.txt',
     },
 );
 Readonly my $CONFIG_FILE => q/moseley-log-beautifier.ini/;
-Readonly my $CONFIG      => get_configuration($CONFIG_FILE);
+Readonly my $CONFIG => eval { get_configuration($CONFIG_FILE); } or do {
+    my $message = qq/Error reading config: $EVAL_ERROR/;
+    _log_write($message);
+    croak($message);
+};
 
-if ( !$CONFIG ) {
-    croak( qq/Failed to load config file "$CONFIG_FILE": /
-          . Config::Tiny->errstr );
-}
-Readonly my $CHANNELS => get_channels( $CONFIG->{'_'}{'channels_file'} );
+Readonly my $CHANNELS =>
+  eval { get_channels( $CONFIG->{'_'}{'channels_file'} ); } or do {
+    my $message = qq/Error reading channels: $EVAL_ERROR/;
+    _log_write($message);
+    croak($message);
+  };
 
 main();
+
 1;
 
 sub main {
-
-    my $logfile = $ARGV[0]
+    my $transmitter_log = $ARGV[0]
       || File::Spec->catfile( $CONFIG->{'_'}{'transmitter_log_dir'},
         q/Log.txt/ );
+    _log_write(qq/Begin run on file "$transmitter_log"/);
 
-    open my $fh, '<', $logfile;
-    my $processed_records = _process_transmitter_log($fh);
+    open my $fh, '<', $transmitter_log;
+    my $processed_records = eval { _process_transmitter_log($fh); } or do {
+        _log_write(qq/Failed to process TX logs: $EVAL_ERROR/);
+        croak($EVAL_ERROR);
+    };
     close $fh;
 
-    my $log_date = [ sort keys %{$processed_records} ]->[0];
-    print_processed_logs(
-        { 'log_date' => $log_date, 'log_data' => $processed_records } );
+    my $log_date     = [ sort keys %{$processed_records} ]->[0];
+    my $record_count = eval {
+        print_processed_logs(
+            { 'log_date' => $log_date, 'log_data' => $processed_records } );
+    };
+    if ( !defined $record_count ) {
+        _log_write(qq/Failed to print TX logs: $EVAL_ERROR/);
+        croak($EVAL_ERROR);
+    }
+    elsif ( $record_count == 0 ) {
+        my $message =
+qq/Zero horizontal records created from raw TX log file "$transmitter_log"/;
+        _log_write($message);
+        croak($message);
+    }
+    else {
+        _log_write(qq/TX logs processed successfully for $log_date.  $record_count records./);
+    }
     return 1;
 }
 
@@ -97,7 +122,7 @@ sub print_processed_logs {
         _print_as_text(
             { 'log_date' => $args->{'log_date'}, 'data' => $tabular_data } );
     }
-    return 1;
+    return scalar @{$tabular_data};
 }
 
 sub _format_tabular {
@@ -113,12 +138,14 @@ sub _format_tabular {
     my @output_fields =
       map { $_->{'Description'} }
       @{$CHANNELS}{ @{ $CONFIG->{'_'}{'field_order'} } };
+
     my $output_formats = {};
     foreach my $key ( keys %{$CHANNELS} ) {
         my $field_name = $CHANNELS->{$key}{'Description'};
         my $units      = $CHANNELS->{$key}{'Units'};
         $output_formats->{$field_name} = $units;
     }
+
     my @tabular =
       ( [ q|Time|, @output_fields ] );    # initialize w/ column headings
     foreach my $timestamp ( sort keys %{$horizontal_records} ) {
@@ -178,7 +205,7 @@ sub _print_with_word {
 
     my $header = _slurp_file( $CONFIG->{'_'}{'header_file'} );
     my $footer = _slurp_file( $CONFIG->{'_'}{'footer_file'} );
-    
+
     my @rows = @{ $args->{'data'} };
 
     my $word   = Win32::OLE->new( 'Word.Application', 'Quit' );
@@ -268,13 +295,19 @@ sub _slurp_file {
 sub _process_transmitter_log {
     my $fh = shift;
 
-    my $csv = Text::CSV_XS->new( { q/allow_whitespace/ => 1, } );
+    my $csv = Text::CSV_XS->new( { q/allow_whitespace/ => 1, q/binary/ => 1 } );
 
     my @column_names       = @{ $csv->getline($fh) };
     my $horizontal_records = {};
     my $vertical_record    = {};
     $csv->bind_columns( \@{$vertical_record}{@column_names} );
-    while ( $csv->getline($fh) ) {
+    while ( my $result = $csv->getline($fh) ) {
+        if ( !defined $result && !$csv->eof ) {
+            my ( $code, $message, $position, $record_num ) = $csv->error_diag();
+            croak(
+qq/Failed to process TX log: $message at record $record_num, character $position/
+            );
+        }
         my $time = $vertical_record->{'Time'};
         my $date = $vertical_record->{'Date'} . q{/} . localtime->year;
         my $value =
@@ -291,15 +324,33 @@ sub _process_transmitter_log {
     return $horizontal_records;
 }
 
+sub _log_write {
+    my $message = shift;
+    open my $fh, q{>>}, $CONFIG->{'_'}{'log_file'};
+    my $timestamp = localtime->strftime('%c');
+    print {$fh} qq/[$timestamp] $message\n/;
+    close $fh;
+    return 1;
+}
+
 sub get_channels {
     my $channels_file         = shift;
     my $channels_config_final = {};
     my $channels_config       = Config::Tiny->read($channels_file);
+    if ( !$channels_config ) {
+        croak( qq/Failed to read channels config "$channels_file": /
+              . Config::Tiny->errstr );
+    }
     foreach my $channel ( keys %{$channels_config} ) {
         if ( $channel =~ /^channel/ixsm ) {
             my ($channel_number) = $channel =~ m/channel\s+([[:alnum:]]+)/ixsm;
             $channels_config_final->{ uc $channel_number } =
               $channels_config->{$channel};
+        }
+        else {
+            croak(
+qq/Malformed key "[$channel]" in channels config "$channels_file"/
+            );
         }
     }
     return $channels_config_final;

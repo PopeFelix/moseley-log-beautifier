@@ -19,3 +19,5 @@ print_with_word=1
 header_file=header.txt
 ; Contents of this file will be printed at the bottom of every log
 footer_file=header.txt
+; Log script activities to this file
+log_file=log.txt

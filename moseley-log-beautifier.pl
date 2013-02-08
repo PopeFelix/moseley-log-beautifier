@@ -31,9 +31,11 @@ use Cwd;
 use Encode;
 use File::Copy;
 use Perl6::Form;
+use File::Temp;
 
 our $VERSION = 1.11;
 
+Readonly my $EMPTY                  => q{};
 Readonly my $FUNCTION_NAME_POSITION => 3;
 Readonly my %DEFAULTS               => (
     '_' => {
@@ -282,8 +284,6 @@ sub _print_as_text {
 
     my $header = _slurp_file( $CONFIG->{'_'}{'header_file'} );
     my $footer = _slurp_file( $CONFIG->{'_'}{'footer_file'} );
-    my $csv    = Text::CSV_XS->new(
-        { 'sep_char' => q/,/, 'binary' => 1, 'quote_char' => undef } );
 
     my @column_headings = @{ shift $args->{'data'} };
     my @rows            = @{ $args->{'data'} };
@@ -292,13 +292,20 @@ sub _print_as_text {
     my $field_format  = join q{|}, (q/{]]]]]]]]}/) x scalar @column_headings;
 
     # formatting starts with headers followed by double line
-    my @format_data = (
-        $header_format, @column_headings, q/========/ x scalar @column_headings,
-    );
+    my @format_data = ( $header_format, @column_headings, );
+    push @format_data, join q{|}, (q/==========/) x scalar @column_headings;
     foreach my $row (@rows) {
         push @format_data, ( $field_format, @{$row} );
     }
     my $text = form @format_data;
+
+    my ( $fh, $tempfile ) = File::Temp::tempfile;
+    $fh->print($text) or croak(qq/Failed to write to tempfile: $OS_ERROR/);
+    close $fh;
+
+    File::Copy::copy( $tempfile, $CONFIG->{'_'}{'printer_path'} )
+      or croak(qq/Failed to print file: $OS_ERROR/);
+    unlink $tempfile;
 
     return 1;
 }
@@ -399,7 +406,11 @@ sub get_configuration {
 
     foreach my $key ( keys %DEFAULTS ) {
         foreach my $subkey ( keys %{ $DEFAULTS{$key} } ) {
-            $config->{$key}{$subkey} ||= clone( $DEFAULTS{$key}{$subkey} );
+            if ( !defined $config->{$key}{$subkey}
+                || $config->{$key}{$subkey} eq q{} )
+            {
+                $config->{$key}{$subkey} = clone( $DEFAULTS{$key}{$subkey} );
+            }
         }
     }
     return $config;

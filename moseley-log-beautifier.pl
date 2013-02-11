@@ -198,6 +198,13 @@ sub _format_tabular {
 # # data: an arrayref of arrayrefs.  First line is treated as column headings, following lines are treated as data.
 #
 # A double horizontal rule will be added between the column headings and the data.
+#
+# NB: The reason that everything gets its own object (e.g. "my $tables = $doc->Tables; my $table = $tables->Add(...);")
+# is not (neccessarily) for "Law of Demeter" reasons, but rather MS recommended practice when
+# automating Office applications from Visual Studio (and by extension, OLE): http://support.microsoft.com/kb/317109
+# Experimentally, I have noticed instances of the Word executable remaining in memory after program exit;
+# refactoring the code in this way is an attempt to deal with that issue.
+# 11 Feb 2013 KP
 sub _print_with_word {
     my $args = shift;
 
@@ -222,13 +229,11 @@ sub _print_with_word {
     my $doc    = $word->Documents->Add();
     my $select = $word->Selection;
 
-    ## no critic (ProhibitLongChainsOfMethodCalls)
-# Explanation: I'm working with the MS Word OLE API.  The way that this API is set up requires long chains of method calls
-# to drill down to the particular object I need to work with.
-    $select->ParagraphFormat->{'SpaceAfter'} = 0;
+    my $header_paragraph_format = $select->ParagraphFormat;
+    $header_paragraph_format->{'SpaceAfter'} = 0;
     $select->TypeText( { 'Text' => qq/$header\n\n/, } );
     $select->BoldRun();
-    $select->ParagraphFormat->{'Alignment'} = wdAlignParagraphRight;
+    $header_paragraph_format->{'Alignment'} = wdAlignParagraphRight;
     $select->TypeText(
         {
             'Text' => Time::Piece->strptime(
@@ -238,32 +243,43 @@ sub _print_with_word {
     );
     $select->BoldRun();
 
-    my $range = $select->Range;
-    my $table = $doc->Tables->Add( $range, scalar @rows, scalar @{ $rows[0] } );
+    my $range  = $select->Range;
+    my $tables = $doc->Tables;
+    my $table  = $tables->Add( $range, scalar @rows, scalar @{ $rows[0] } );
     for my $rownum ( 0 .. $#rows ) {
         for my $colnum ( 0 .. $#{ $rows[$rownum] } ) {
-            my @cellpos = ( $rownum + 1, $colnum + 1 );
-            my $data = $rows[$rownum][$colnum];
-            $table->Cell(@cellpos)->Range->{'Text'} = $data;
-            1;
+            my @cellpos    = ( $rownum + 1, $colnum + 1 );
+            my $data       = $rows[$rownum][$colnum];
+            my $cell       = $table->Cell(@cellpos);
+            my $cell_range = $cell->Range;
+            $cell_range->{'Text'} = $data;
         }
     }
-
-    $table->Rows->First->Range->Font->{'Bold'} = 1;
-    $table->Rows->First->Range->ParagraphFormat->{'Alignment'} =
-      wdAlignParagraphCenter;
-    @{ $table->Rows->First->Borders(wdBorderBottom) }{qw/LineStyle LineWidth/} =
+    my $rows                 = $table->Rows;
+    my $first_row            = $rows->First;
+    my $first_row_range      = $rows->First->Range;
+    my $first_row_range_font = $first_row_range->Font;
+    $first_row_range_font->{'Bold'} = 1;
+    my $first_row_range_paragraph_format = $first_row_range->ParagraphFormat;
+    $first_row_range_paragraph_format->{'Alignment'} = wdAlignParagraphCenter;
+    my $first_row_bottom_border = $first_row->Borders(wdBorderBottom);
+    @{$first_row_bottom_border}{qw/LineStyle LineWidth/} =
       ( wdLineStyleDouble, wdLineWidth100pt );
-    $doc->Paragraphs->Last->Format->{'Alignment'}  = wdAlignParagraphLeft;
-    $doc->Paragraphs->Last->Format->{'SpaceAfter'} = 0;
-    $doc->Paragraphs->Last->Range->InsertAfter( { 'Text' => qq/\n$footer/ } );
+    my $paragraphs            = $doc->Paragraphs;
+    my $last_paragraph        = $paragraphs->Last;
+    my $last_paragraph_format = $last_paragraph->Format;
 
-    #$doc->SaveAs( { 'Filename' => Cwd::getcwd . '/test.doc' } );
+    $last_paragraph_format->{'Alignment'}  = wdAlignParagraphLeft;
+    $last_paragraph_format->{'SpaceAfter'} = 0;
+    my $last_paragraph_range = $last_paragraph->Range;
+    $last_paragraph_range->InsertAfter( { 'Text' => qq/\n$footer/ } );
 
-    $doc->PrintOut();
+    $doc->SaveAs( { 'Filename' => Cwd::getcwd . '/test.doc' } );
+
+    #$doc->PrintOut();
     $doc->Close( { 'SaveChanges' => wdDoNotSaveChanges } );
     $word->Quit();
-    ## use critic
+
     return 1;
 }
 

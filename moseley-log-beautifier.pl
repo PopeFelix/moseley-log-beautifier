@@ -300,6 +300,7 @@ sub _print_as_text {
     my $text = form @format_data;
 
     my ( $fh, $tempfile ) = File::Temp::tempfile;
+    $fh->binmode(q{:crlf});
     $fh->print($text) or croak(qq/Failed to write to tempfile: $OS_ERROR/);
     close $fh;
 

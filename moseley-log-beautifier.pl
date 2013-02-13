@@ -23,7 +23,8 @@ use Time::Piece;
 use Config::Tiny;
 use Readonly;
 use Win32::OLE;
-use Win32::OLE::Const 'Microsoft Word';
+use Win32::OLE::Const 'Microsoft Internet Controls';
+use Win32::OLE::Variant;
 use Carp qw/carp croak/;
 use File::Spec;
 use Clone qw/clone/;
@@ -33,11 +34,19 @@ use File::Copy;
 use Perl6::Form;
 use File::Temp;
 
-our $VERSION = 1.11;
+our $VERSION = 1.2;
 
 Readonly my $EMPTY                  => q{};
 Readonly my $FUNCTION_NAME_POSITION => 3;
-Readonly my %DEFAULTS               => (
+Readonly my $DEBUG                  => 1;
+Readonly my $HTML_PREAMBLE =>
+q{<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">};
+
+# constants used with Internet Explorer OLE from Vc7/PlatformSDK/Include/MsHtmHst.h :
+Readonly my $PRINT_DONTBOTHERUSER    => 1;
+Readonly my $PRINT_WAITFORCOMPLETION => 2;
+
+Readonly my %DEFAULTS => (
     '_' => {
         'channels_file'       => q/channels.ini/,
         'transmitter_log_dir' => q|Z:|,
@@ -124,14 +133,17 @@ sub print_processed_logs {
 
     my $tabular_data = _format_tabular( $args->{'log_data'} );
 
-    if ( $CONFIG->{'_'}{'print_with_word'} ) {
-        _print_with_word(
+    if ( $CONFIG->{'_'}{'print_with_ie'} ) {
+        _print_with_internet_explorer(
             { 'log_date' => $args->{'log_date'}, 'data' => $tabular_data } );
+        _debug(q/Printed with Word/);
     }
     else {
         _print_as_text(
             { 'log_date' => $args->{'log_date'}, 'data' => $tabular_data } );
+        _debug(q/Printed as text/);
     }
+    _debug( q/Returning record count of / . scalar @{$tabular_data} );
     return scalar @{$tabular_data};
 }
 
@@ -199,13 +211,7 @@ sub _format_tabular {
 #
 # A double horizontal rule will be added between the column headings and the data.
 #
-# NB: The reason that everything gets its own object (e.g. "my $tables = $doc->Tables; my $table = $tables->Add(...);")
-# is not (neccessarily) for "Law of Demeter" reasons, but rather MS recommended practice when
-# automating Office applications from Visual Studio (and by extension, OLE): http://support.microsoft.com/kb/317109
-# Experimentally, I have noticed instances of the Word executable remaining in memory after program exit;
-# refactoring the code in this way is an attempt to deal with that issue.
-# 11 Feb 2013 KP
-sub _print_with_word {
+sub _print_with_internet_explorer {
     my $args = shift;
 
     if ( ref $args ne q/HASH/ ) {
@@ -219,68 +225,79 @@ sub _print_with_word {
             croak(qq/Missing required key '$required_key' in args/);
         }
     }
+    my $html     = _generate_html($args);
+    my $temp     = File::Temp->new( q{SUFFIX} => q{.html} );
+    my $filename = $temp->filename;
+
+    binmode $temp, q{:crlf};
+    $temp->print($html) or croak(qq/Failed to write to tempfile: $OS_ERROR/);
+    $temp->flush;
+
+    my $IE = Win32::OLE->new('InternetExplorer.Application')
+      or croak( q/Failed to instantiate Internet Explorer for printing: /
+          . Win32::OLE->LastError );
+    $IE->Navigate($filename);
+
+    while ( $IE->{q/Busy/} ) {
+        sleep 1;
+    }
+
+    # Prints the active document in IE
+    $IE->ExecWB( OLECMDID_PRINT, OLECMDEXECOPT_DONTPROMPTUSER,
+        Variant( VT_I2, $PRINT_WAITFORCOMPLETION | $PRINT_DONTBOTHERUSER ) );
+
+    $IE->Quit();
+    $temp->close;
+
+    return 1;
+}
+
+sub _generate_html {
+    my $args = shift;
 
     my $header = _slurp_file( $CONFIG->{'_'}{'header_file'} );
     my $footer = _slurp_file( $CONFIG->{'_'}{'footer_file'} );
 
-    my @rows = @{ $args->{'data'} };
+    $header =~ s/\n/<br \/>\n/gxsm;
+    $footer =~ s/\n/<br \/>\n/gxsm;
 
-    my $word   = Win32::OLE->new( 'Word.Application', 'Quit' );
-    my $doc    = $word->Documents->Add();
-    my $select = $word->Selection;
+    my @column_headings = @{ shift $args->{'data'} };
+    my @rows            = @{ $args->{'data'} };
 
-    my $header_paragraph_format = $select->ParagraphFormat;
-    $header_paragraph_format->{'SpaceAfter'} = 0;
-    $select->TypeText( { 'Text' => qq/$header\n\n/, } );
-    $select->BoldRun();
-    $header_paragraph_format->{'Alignment'} = wdAlignParagraphRight;
-    $select->TypeText(
-        {
-            'Text' => Time::Piece->strptime(
-                $args->{'log_date'}, q|%m/%d/%Y %H:%M:%S|
-              )->strftime(qq/%A %B %d %Y\n\n/)
-        }
-    );
-    $select->BoldRun();
+    my $html = <<"END";
+$HTML_PREAMBLE
+<html xmlns="http://www.w3.org/1999/xhtml">
+    <head>
+        <title></title>
+        <style type="text/css">
+            td {
+                text-align: right;
+            }
+            .header {
+                text-align: center;
+            }
+        </style>
+    </head>
+    <body>
+        <p class="header">$header</p>
+        <table>           
+END
+    $html .= q{<tr>};
+    $html .= join $EMPTY, map { qq{<th>$_</th>} } @column_headings;
+    $html .= qq{</tr>\n};
 
-    my $range  = $select->Range;
-    my $tables = $doc->Tables;
-    my $table  = $tables->Add( $range, scalar @rows, scalar @{ $rows[0] } );
-    for my $rownum ( 0 .. $#rows ) {
-        for my $colnum ( 0 .. $#{ $rows[$rownum] } ) {
-            my @cellpos    = ( $rownum + 1, $colnum + 1 );
-            my $data       = $rows[$rownum][$colnum];
-            my $cell       = $table->Cell(@cellpos);
-            my $cell_range = $cell->Range;
-            $cell_range->{'Text'} = $data;
-        }
+    foreach my $row (@rows) {
+        $html .= q{<tr>};
+        $html .= join $EMPTY, map { qq{<td>$_</td>} } @{$row};
+        $html .= qq{</tr>\n};
     }
-    my $rows                 = $table->Rows;
-    my $first_row            = $rows->First;
-    my $first_row_range      = $rows->First->Range;
-    my $first_row_range_font = $first_row_range->Font;
-    $first_row_range_font->{'Bold'} = 1;
-    my $first_row_range_paragraph_format = $first_row_range->ParagraphFormat;
-    $first_row_range_paragraph_format->{'Alignment'} = wdAlignParagraphCenter;
-    my $first_row_bottom_border = $first_row->Borders(wdBorderBottom);
-    @{$first_row_bottom_border}{qw/LineStyle LineWidth/} =
-      ( wdLineStyleDouble, wdLineWidth100pt );
-    my $paragraphs            = $doc->Paragraphs;
-    my $last_paragraph        = $paragraphs->Last;
-    my $last_paragraph_format = $last_paragraph->Format;
-
-    $last_paragraph_format->{'Alignment'}  = wdAlignParagraphLeft;
-    $last_paragraph_format->{'SpaceAfter'} = 0;
-    my $last_paragraph_range = $last_paragraph->Range;
-    $last_paragraph_range->InsertAfter( { 'Text' => qq/\n$footer/ } );
-
-    $doc->SaveAs( { 'Filename' => Cwd::getcwd . '/test.doc' } );
-
-    #$doc->PrintOut();
-    $doc->Close( { 'SaveChanges' => wdDoNotSaveChanges } );
-    $word->Quit();
-
-    return 1;
+    $html .= <<"END";
+        </table>
+        <p>$footer</p>
+    </body>
+</html> 
+END
+    return $html;
 }
 
 sub _print_as_text {
@@ -377,6 +394,14 @@ sub _log_write {
         croak(q/Failed to print to log/);
     }
     close $fh;
+    return 1;
+}
+
+sub _debug {
+    my $message = shift;
+    if ($DEBUG) {
+        _log_write(qq/DEBUG: $message/);
+    }
     return 1;
 }
 

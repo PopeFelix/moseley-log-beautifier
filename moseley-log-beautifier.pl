@@ -34,7 +34,7 @@ use File::Copy;
 use Perl6::Form;
 use File::Temp;
 
-our $VERSION = 1.2;
+our $VERSION = 1.3;
 
 Readonly my $EMPTY                  => q{};
 Readonly my $FUNCTION_NAME_POSITION => 3;
@@ -49,28 +49,36 @@ Readonly my $PRINT_WAITFORCOMPLETION => 2;
 Readonly my %DEFAULTS => (
     '_' => {
         'channels_file'       => q/channels.ini/,
-        'transmitter_log_dir' => q|Z:|,
-        'printer_path'        => q|//153.91.87.132/HP DeskJet 712C|,
-        'field_order'         => [qw/T33 T34 T41 T48 T32 S1/],
-        'print_with_word'     => 1,
+        'transmitter_log_dir' => undef,
+        'printer_path'        => undef,
+        'field_order'         => undef,
+        'print_with_ie'       => 1,
         'header_file'         => 'header.txt',
         'footer_file'         => 'footer.txt',
         'log_file'            => 'log.txt',
     },
 );
-Readonly my $CONFIG_FILE => q/moseley-log-beautifier.ini/;
+
+# This is an array for purposes of Windows compatibility
+Readonly my @CONFIG_PATH => ( File::Spec->splitpath($PROGRAM_NAME) )[ 0 .. 1 ];
+
+Readonly my $CONFIG_FILE =>
+  File::Spec->rel2abs( q/moseley-log-beautifier.ini/, @CONFIG_PATH );
+
 Readonly my $CONFIG => eval { get_configuration($CONFIG_FILE); } or do {
     my $message = qq/Error reading config: $EVAL_ERROR/;
     _log_write($message);
     croak($message);
 };
 
-Readonly my $CHANNELS =>
-  eval { get_channels( $CONFIG->{'_'}{'channels_file'} ); } or do {
+Readonly my $CHANNELS => eval {
+    get_channels(
+        File::Spec->rel2abs( $CONFIG->{'_'}{'channels_file'}, @CONFIG_PATH ) );
+} or do {
     my $message = qq/Error reading channels: $EVAL_ERROR/;
     _log_write($message);
     croak($message);
-  };
+};
 
 main();
 
@@ -96,9 +104,11 @@ sub main {
     } or _error_exit(qq/Failed to close TX log: $EVAL_ERROR/);
 
     my $log_date     = [ sort keys %{$processed_records} ]->[0];
+    my $tabular_data = format_tabular($processed_records);
+
     my $record_count = eval {
         print_processed_logs(
-            { 'log_date' => $log_date, 'log_data' => $processed_records } );
+            { 'log_date' => $log_date, 'data' => $processed_records } );
     };
     if ( !defined $record_count ) {
         _error_exit(qq/Failed to print TX logs: $EVAL_ERROR/);
@@ -116,6 +126,15 @@ qq/TX logs processed successfully for $log_date.  $record_count records./
     return 1;
 }
 
+# my $record_count = print_processed_logs({ 'log_date' => $date, 'log_data' => \@data });
+#
+# Print out processed logs.
+#
+# Expects args in a hashref with keys:
+## "log_date" Date that will be printed on the first line of the printout, under the header
+## "data" An arrayref of arrayrefs (i.e. 2-D arrayref)  This is the data that will be printed.
+#
+# Returns number of rows log data have been processed into
 sub print_processed_logs {
     my $args = shift;
 
@@ -125,29 +144,26 @@ sub print_processed_logs {
             ( caller 0 )[$FUNCTION_NAME_POSITION]
         );
     }
-    foreach my $required_key (qw/log_date log_data/) {
+    foreach my $required_key (qw/log_date data/) {
         if ( !$args->{$required_key} ) {
             croak(qq/Missing required key '$required_key' in args/);
         }
     }
 
-    my $tabular_data = _format_tabular( $args->{'log_data'} );
-
     if ( $CONFIG->{'_'}{'print_with_ie'} ) {
-        _print_with_internet_explorer(
-            { 'log_date' => $args->{'log_date'}, 'data' => $tabular_data } );
-        _debug(q/Printed with Word/);
+        _print_with_internet_explorer($args);
+        _debug(q/Printed with IE/);
     }
     else {
-        _print_as_text(
-            { 'log_date' => $args->{'log_date'}, 'data' => $tabular_data } );
+        _print_as_text($args);
         _debug(q/Printed as text/);
     }
-    _debug( q/Returning record count of / . scalar @{$tabular_data} );
-    return scalar @{$tabular_data};
+    _debug( q/Returning record count of / . scalar @{ $args->{'data'} } );
+    return scalar @{ $args->{'data'} };
 }
 
-sub _format_tabular {
+# my $tabular = format_tabular(\%records)
+sub format_tabular {
     my $horizontal_records = shift;
 
     if ( ref $horizontal_records ne q/HASH/ ) {
@@ -382,6 +398,7 @@ qq/Failed to process TX log: $message at record $record_num, character $position
         my $timestamp = qq/$date $time/;
         $horizontal_records->{$timestamp}{$field_name} = $value;
     }
+
     return $horizontal_records;
 }
 
@@ -448,6 +465,11 @@ sub get_configuration {
 
     foreach my $key ( keys %DEFAULTS ) {
         foreach my $subkey ( keys %{ $DEFAULTS{$key} } ) {
+            if (   !defined $DEFAULTS{$key}{$subkey}
+                && !$config->{$key}{$subkey} )
+            {
+                croak(qq/Required key "$key" not present in config file/);
+            }
             if ( !defined $config->{$key}{$subkey}
                 || $config->{$key}{$subkey} eq q{} )
             {
@@ -457,3 +479,136 @@ sub get_configuration {
     }
     return $config;
 }
+__END__
+
+=pod
+
+=head1 NAME
+
+moseley-log-beautifier.pl - A script to take the output from Moseley's CommServer, reformat it into a 
+more readable form, and print the reformatted output. 
+
+=head1 SYNOPSIS
+
+Run without arguments, it will process "Log.txt" in the transmitter logs directory.
+
+=head1 AUTHOR
+
+Kit Peters <cpeters@ucmo.edu>
+
+=head1 ACKNOWLEDGEMENTS
+
+My thanks go to all the friendly folks at Stack Overflow, particularly "ikegami" and "daotoad", who so
+patiently answered all my weird questions.
+
+=head1 BUGS AND LIMITATIONS
+
+The only time specifying the printer will work is if you're printing as text.  Printing with IE always
+goes to the default printer.
+
+=head1 USAGE
+
+To process the file "Log.txt" in the TX logs directory (specified in config file) 
+
+perl moseley-log-beautifier.pl 
+
+Run with a single argument, it will process the file specified on the command line.
+
+perl moseley-log-beautifier.pl //path/to/Log02132013.txt
+
+Run with multiple arguments, it will treat the first argument as the log file to process and 
+ignore the rest of the arguments.  Don't do this; it's silly.
+
+=head1 REQUIRED ARGUMENTS 
+
+None
+
+=head1 DESCRIPTION
+
+This script is part of a larger system designed to automate KMOS's TV transmitter meter readings.  It 
+depends upon log files generated by Moseley CommServer, which is the program that actually logs the meter 
+readings.  Configuration of CommServer is beyond the scope of this document.
+
+=head1 CONFIGURATION
+
+The program is configured by a configuration file "moseley-log-beautifier.ini", which is expected to be located in
+the same directory as the program is run from.  Channel configuration is stored in a file, "channels.ini" 
+(note that this can be changed in the config file), also expected (by default) to be in the same directory
+as the program is run from.
+
+=head2 CONFIG FILE OPTIONS
+
+=over 4
+
+=item channels_file
+
+This specifies the location of the channel definitions file.  It is expected to be in .ini format, and 
+each entry is expected to be of the form
+
+    [Channel XNN]
+        Description=Some description here...
+        Units=[Degrees|Watts|Amps|Volts|Percentage|None]
+    
+Where B<X> is one of "T" (for telemetry channels) or "S" (for status channels), and B<NN> is the channel
+number.  Description is a free-form string.  Units will be printed out with the proper abbreviation, e.g. 
+"W" for watts, "%" for percentage, and E<deg> for degrees.
+
+=item transmitter_log_dir
+
+This specifies the location from which log files from CommServer will be read.
+
+=item field_order
+
+Order of fields to be displayed in the output file.  These fields should be in the same format as the 
+channel definitions, e.g. 'T33' for telemetry channel 33.
+
+Example: "field_order=T33 T34 T41 T48 T32 S1" will display, in order, telemetry channels 33, 34, 41, 48, 
+and 32, and status channel 1.
+
+=item printer_path
+
+Path to the output printer. This is currently ignored if print_with_ie is set.
+
+=item print_with_ie
+
+If this is set, output will be generated in HTML and printed with Internet Explorer to the host computer's
+default printer.
+
+=item header_file
+
+The contents of this file will be printed before the table of meter readings is printed.
+
+=item footer_file
+
+The contents of this file will be printed after the table of meter readings is printed.
+
+=back
+
+=head1 OPTIONS
+
+Specify a specific file to process by specifiying the full path to the file on the command line
+
+=head1 DIAGNOSTICS
+
+Some output is written to a log file that can be specified in the configuration.  In future revisions Windows 
+native logging support may be added.
+
+=head1 DEPENDENCIES
+
+This program depends on log files generated by Moseley CommServer.
+
+=head1 EXIT STATUS
+
+0 on success, nonzero on failure.
+
+=head1 INCOMPATIBILITIES
+
+At present, this program is designed to run more or less on Windows.  It has not been tested on Linux 
+or other Unices.
+
+=head1 LICENSE AND COPYRIGHT
+
+This program is copyright (c) 2013 by the University of Central Missouri.  Licensed under the same terms 
+as Perl itself.
+
+=cut

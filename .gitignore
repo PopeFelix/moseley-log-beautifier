@@ -1,0 +1,11 @@
+# ignore Vim swap files
+*.swp
+# ignore the tilde files that vim makes 
+*~
+*.ini
+*.tmp
+*.doc
+# ignore txt files
+*.txt
+# Except the README
+!README.txt

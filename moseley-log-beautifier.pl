@@ -132,10 +132,10 @@ sub print_processed_logs {
     }
 
     my $tabular_data = _format_tabular( $args->{'log_data'} );
-
+    my ($log_date) = $args->{'log_date'} =~ m/(\d{2}\/\d{2}\/\d{4})/xsm;
     if ( $CONFIG->{'_'}{'print_with_ie'} ) {
         _print_with_internet_explorer(
-            { 'log_date' => $args->{'log_date'}, 'data' => $tabular_data } );
+            { 'log_date' => $log_date, 'data' => $tabular_data } );
         _debug(q/Printed with Word/);
     }
     else {
@@ -276,10 +276,14 @@ $HTML_PREAMBLE
             .header {
                 text-align: center;
             }
+            .log_date {
+            	text-align: right;
+            }
         </style>
     </head>
     <body>
         <p class="header">$header</p>
+        <p class="log_date">$args->{'log_date'}</p>
         <table>           
 END
     $html .= q{<tr>};

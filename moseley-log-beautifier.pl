@@ -1,15 +1,10 @@
-#!/usr/bin/perl
+#!/usr/bin/perl -- ## no critic (RequireRcsKeywords)
 
 # A script to beautify automatic log output from Moseley CommServer by
 # presenting the supplied data in a more human readable form.
 #
 # Original author: Kit Peters <cpeters@ucmo.edu>
 #
-# Base URL $URL$
-# $Id$
-# $Rev$
-# Last modified by $Author$
-# Last modified $Date$
 
 use strict;
 use warnings;
@@ -33,9 +28,8 @@ use Encode;
 use File::Copy;
 use Perl6::Form;
 use File::Temp;
-# Testing
 
-our $VERSION = 1.3;
+our $VERSION = 1.21;
 
 Readonly my $EMPTY                  => q{};
 Readonly my $FUNCTION_NAME_POSITION => 3;
@@ -59,27 +53,19 @@ Readonly my %DEFAULTS => (
         'log_file'            => 'log.txt',
     },
 );
-
-# This is an array for purposes of Windows compatibility
-Readonly my @CONFIG_PATH => ( File::Spec->splitpath($PROGRAM_NAME) )[ 0 .. 1 ];
-
-Readonly my $CONFIG_FILE =>
-  File::Spec->rel2abs( q/moseley-log-beautifier.ini/, @CONFIG_PATH );
-
+Readonly my $CONFIG_FILE => q/moseley-log-beautifier.ini/;
 Readonly my $CONFIG => eval { get_configuration($CONFIG_FILE); } or do {
     my $message = qq/Error reading config: $EVAL_ERROR/;
     _log_write($message);
     croak($message);
 };
 
-Readonly my $CHANNELS => eval {
-    get_channels(
-        File::Spec->rel2abs( $CONFIG->{'_'}{'channels_file'}, @CONFIG_PATH ) );
-} or do {
+Readonly my $CHANNELS =>
+  eval { get_channels( $CONFIG->{'_'}{'channels_file'} ); } or do {
     my $message = qq/Error reading channels: $EVAL_ERROR/;
     _log_write($message);
     croak($message);
-};
+  };
 
 main();
 
@@ -105,11 +91,9 @@ sub main {
     } or _error_exit(qq/Failed to close TX log: $EVAL_ERROR/);
 
     my $log_date     = [ sort keys %{$processed_records} ]->[0];
-    my $tabular_data = format_tabular($processed_records);
-
     my $record_count = eval {
         print_processed_logs(
-            { 'log_date' => $log_date, 'data' => $processed_records } );
+            { 'log_date' => $log_date, 'log_data' => $processed_records } );
     };
     if ( !defined $record_count ) {
         _error_exit(qq/Failed to print TX logs: $EVAL_ERROR/);
@@ -127,15 +111,6 @@ qq/TX logs processed successfully for $log_date.  $record_count records./
     return 1;
 }
 
-# my $record_count = print_processed_logs({ 'log_date' => $date, 'log_data' => \@data });
-#
-# Print out processed logs.
-#
-# Expects args in a hashref with keys:
-## "log_date" Date that will be printed on the first line of the printout, under the header
-## "data" An arrayref of arrayrefs (i.e. 2-D arrayref)  This is the data that will be printed.
-#
-# Returns number of rows log data have been processed into
 sub print_processed_logs {
     my $args = shift;
 
@@ -145,7 +120,7 @@ sub print_processed_logs {
             ( caller 0 )[$FUNCTION_NAME_POSITION]
         );
     }
-    foreach my $required_key (qw/log_date data/) {
+    foreach my $required_key (qw/log_date log_data/) {
         if ( !$args->{$required_key} ) {
             croak(qq/Missing required key '$required_key' in args/);
         }
@@ -159,15 +134,15 @@ sub print_processed_logs {
         _debug(q/Printed with Word/);
     }
     else {
-        _print_as_text($args);
+        _print_as_text(
+            { 'log_date' => $args->{'log_date'}, 'data' => $tabular_data } );
         _debug(q/Printed as text/);
     }
-    _debug( q/Returning record count of / . scalar @{ $args->{'data'} } );
-    return scalar @{ $args->{'data'} };
+    _debug( q/Returning record count of / . scalar @{$tabular_data} );
+    return scalar @{$tabular_data};
 }
 
-# my $tabular = format_tabular(\%records)
-sub format_tabular {
+sub _format_tabular {
     my $horizontal_records = shift;
 
     if ( ref $horizontal_records ne q/HASH/ ) {
@@ -406,7 +381,6 @@ qq/Failed to process TX log: $message at record $record_num, character $position
         my $timestamp = qq/$date $time/;
         $horizontal_records->{$timestamp}{$field_name} = $value;
     }
-
     return $horizontal_records;
 }
 
@@ -473,11 +447,6 @@ sub get_configuration {
 
     foreach my $key ( keys %DEFAULTS ) {
         foreach my $subkey ( keys %{ $DEFAULTS{$key} } ) {
-            if (   !defined $DEFAULTS{$key}{$subkey}
-                && !$config->{$key}{$subkey} )
-            {
-                croak(qq/Required key "$key" not present in config file/);
-            }
             if ( !defined $config->{$key}{$subkey}
                 || $config->{$key}{$subkey} eq q{} )
             {

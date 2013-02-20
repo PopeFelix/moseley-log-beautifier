@@ -1,15 +1,11 @@
-#!/usr/bin/perl
+#!/usr/bin/perl -- ## no critic (RequireRcsKeywords)
+# Explanation: Source control for this project is via Git.
 
 # A script to beautify automatic log output from Moseley CommServer by
 # presenting the supplied data in a more human readable form.
 #
 # Original author: Kit Peters <cpeters@ucmo.edu>
 #
-# Base URL $URL$
-# $Id$
-# $Rev$
-# Last modified by $Author$
-# Last modified $Date$
 
 use strict;
 use warnings;
@@ -29,16 +25,24 @@ use Carp qw/carp croak/;
 use File::Spec;
 use Clone qw/clone/;
 use Cwd;
-use Encode;
 use File::Copy;
 use Perl6::Form;
 use File::Temp;
+use Sys::Syslog qw/:standard :macros/;
+use File::Slurp;
 
-our $VERSION = 1.3;
+our $VERSION = 1.4;
 
-Readonly my $EMPTY                  => q{};
+Readonly my $EMPTY          => q{};
+Readonly my $LOG_FACILITY   => Sys::Syslog::LOG_USER;
+Readonly my $LOG_IDENTIFIER => q/moseley-log-beautifier/;
+Readonly my $LOG_OPTIONS    => $EMPTY;
+
+BEGIN {    # Start logging immediately
+    openlog( $LOG_IDENTIFIER, $LOG_OPTIONS, $LOG_FACILITY );
+}
+
 Readonly my $FUNCTION_NAME_POSITION => 3;
-Readonly my $DEBUG                  => 1;
 Readonly my $HTML_PREAMBLE =>
 q{<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">};
 
@@ -67,8 +71,7 @@ Readonly my $CONFIG_FILE =>
 
 Readonly my $CONFIG => eval { get_configuration($CONFIG_FILE); } or do {
     my $message = qq/Error reading config: $EVAL_ERROR/;
-    _log_write($message);
-    croak($message);
+    _error_exit($message);
 };
 
 Readonly my $CHANNELS => eval {
@@ -76,8 +79,7 @@ Readonly my $CHANNELS => eval {
         File::Spec->rel2abs( $CONFIG->{'_'}{'channels_file'}, @CONFIG_PATH ) );
 } or do {
     my $message = qq/Error reading channels: $EVAL_ERROR/;
-    _log_write($message);
-    croak($message);
+    _error_exit($message);
 };
 
 main();
@@ -85,10 +87,11 @@ main();
 exit 0;
 
 sub main {
+
     my $transmitter_log = $ARGV[0]
       || File::Spec->catfile( $CONFIG->{'_'}{'transmitter_log_dir'},
         q/Log.txt/ );
-    _log_write(qq/Begin run on file "$transmitter_log"/);
+    syslog( LOG_INFO, qq/Begin run on file "$transmitter_log"/ );
 
     my $fh;
     eval {
@@ -103,8 +106,8 @@ sub main {
         1;
     } or _error_exit(qq/Failed to close TX log: $EVAL_ERROR/);
 
-    my $log_date     = [ sort keys %{$processed_records} ]->[0];
-    my $tabular_data = format_tabular($processed_records);
+    my $log_date = [ sort keys %{$processed_records} ]->[0];
+    $log_date =~ s/(\d{2}.\d{2}.\d{4}).+/$1/xsm;
 
     my $record_count = eval {
         print_processed_logs(
@@ -119,7 +122,7 @@ qq/Zero horizontal records created from raw TX log file "$transmitter_log"/
         );
     }
     else {
-        _log_write(
+        syslog( LOG_INFO,
 qq/TX logs processed successfully for $log_date.  $record_count records./
         );
     }
@@ -149,17 +152,22 @@ sub print_processed_logs {
             croak(qq/Missing required key '$required_key' in args/);
         }
     }
+    my $print_args = {
+        'log_date' => $args->{'log_date'},
+        'data'     => format_tabular( $args->{'data'} ),
+    };
 
     if ( $CONFIG->{'_'}{'print_with_ie'} ) {
-        _print_with_internet_explorer($args);
-        _debug(q/Printed with IE/);
+        _print_with_internet_explorer($print_args);
+        syslog( LOG_DEBUG, q/Printed with IE/ );
     }
     else {
-        _print_as_text($args);
-        _debug(q/Printed as text/);
+        _print_as_text($print_args);
+        syslog( LOG_DEBUG, q/Printed as text/ );
     }
-    _debug( q/Returning record count of / . scalar @{ $args->{'data'} } );
-    return scalar @{ $args->{'data'} };
+    syslog( LOG_DEBUG,
+        q/Returning record count of / . scalar @{ $print_args->{'data'} } );
+    return scalar @{ $print_args->{'data'} };
 }
 
 # my $tabular = format_tabular(\%records)
@@ -271,8 +279,8 @@ sub _print_with_internet_explorer {
 sub _generate_html {
     my $args = shift;
 
-    my $header = _slurp_file( $CONFIG->{'_'}{'header_file'} );
-    my $footer = _slurp_file( $CONFIG->{'_'}{'footer_file'} );
+    my $header = File::Slurp::read_file( $CONFIG->{'_'}{'header_file'} );
+    my $footer = File::Slurp::read_file( $CONFIG->{'_'}{'footer_file'} );
 
     $header =~ s/\n/<br \/>\n/gxsm;
     $footer =~ s/\n/<br \/>\n/gxsm;
@@ -331,8 +339,8 @@ sub _print_as_text {
         }
     }
 
-    my $header = _slurp_file( $CONFIG->{'_'}{'header_file'} );
-    my $footer = _slurp_file( $CONFIG->{'_'}{'footer_file'} );
+    my $header = File::Slurp::read_file( $CONFIG->{'_'}{'header_file'} );
+    my $footer = File::Slurp::read_file( $CONFIG->{'_'}{'footer_file'} );
 
     my @column_headings = @{ shift $args->{'data'} };
     my @rows            = @{ $args->{'data'} };
@@ -358,15 +366,6 @@ sub _print_as_text {
     unlink $tempfile;
 
     return 1;
-}
-
-sub _slurp_file {
-    my $file = shift;
-    open my $fh, '<', $file;
-    my $text = do { local $INPUT_RECORD_SEPARATOR = undef; <$fh> };
-    close $fh;
-
-    return $text;
 }
 
 sub _process_transmitter_log {
@@ -402,29 +401,9 @@ qq/Failed to process TX log: $message at record $record_num, character $position
     return $horizontal_records;
 }
 
-sub _log_write {
-    my $message = shift;
-    open my $fh, q{>>}, $CONFIG->{'_'}{'log_file'};
-    my $timestamp = localtime->strftime('%c');
-    my $ret       = $fh->print(qq/[$timestamp] $message\n/);
-    if ( !$ret ) {
-        croak(q/Failed to print to log/);
-    }
-    close $fh;
-    return 1;
-}
-
-sub _debug {
-    my $message = shift;
-    if ($DEBUG) {
-        _log_write(qq/DEBUG: $message/);
-    }
-    return 1;
-}
-
 sub _error_exit {
     my $message = shift;
-    _log_write($message);
+    syslog( LOG_ERR, $message );
     croak($message);
 }
 
@@ -453,7 +432,7 @@ qq/Malformed key "[$channel]" in channels config "$channels_file"/
 
 sub get_configuration {
     my $config_file = shift;
-    my $config      = Config::Tiny->read($CONFIG_FILE);
+    my $config      = Config::Tiny->read($config_file);
     if ( !$config ) {
         croak( qq/Failed to read configuration file $config_file: /
               . Config::Tiny->errstr );
@@ -471,13 +450,17 @@ sub get_configuration {
                 croak(qq/Required key "$key" not present in config file/);
             }
             if ( !defined $config->{$key}{$subkey}
-                || $config->{$key}{$subkey} eq q{} )
+                || $config->{$key}{$subkey} eq $EMPTY )
             {
                 $config->{$key}{$subkey} = clone( $DEFAULTS{$key}{$subkey} );
             }
         }
     }
     return $config;
+}
+
+END {
+    closelog;
 }
 __END__
 
@@ -505,6 +488,12 @@ patiently answered all my weird questions.
 
 The only time specifying the printer will work is if you're printing as text.  Printing with IE always
 goes to the default printer.
+
+Under Windows, log messages will show up in the Event Log with a warning message such as "The description 
+for Event ID 157 from source moseley-log-beautifier.pl [SSW:1.0.1] cannot be found. Either the component 
+that raises this event is not installed on your local computer or the installation is corrupted. You can
+install or repair the component on the local computer."  
+I believe this to be a bug in Sys::Syslog, and I have reported it as such on CPAN.
 
 =head1 USAGE
 

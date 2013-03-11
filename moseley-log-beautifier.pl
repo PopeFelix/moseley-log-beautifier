@@ -31,7 +31,7 @@ use File::Temp;
 use Sys::Syslog qw/:standard :macros/;
 use File::Slurp;
 
-our $VERSION = 1.4;
+our $VERSION = 1.41;
 
 Readonly my $EMPTY          => q{};
 Readonly my $LOG_FACILITY   => Sys::Syslog::LOG_USER;
@@ -202,24 +202,27 @@ sub format_tabular {
 
         # Add units to the tabular data
         foreach my $field_name (@output_fields) {
-            my $unit = $output_formats->{$field_name};
+            if ( $horizontal_record->{$field_name} ne q{N/A} ) {
+                my $unit = $output_formats->{$field_name};
 
-            given ($unit) {
-                when (/^none/ixsm) {
-                    next;
-                }
-                when (/^bool/ixsm) {
-                    $horizontal_record->{$field_name} =
-                      ( $horizontal_record->{$field_name} ) ? 'YES' : 'NO';
-                }
-                when (/^percent/ixsm) {
-                    $horizontal_record->{$field_name} .= q{%};
-                }
-                when (/^deg/ixsm) {
-                    $horizontal_record->{$field_name} .= q{°};
-                }
-                default {
-                    $horizontal_record->{$field_name} .= uc substr $unit, 0, 1;
+                given ($unit) {
+                    when (/^none/ixsm) {
+                        next;
+                    }
+                    when (/^bool/ixsm) {
+                        $horizontal_record->{$field_name} =
+                          ( $horizontal_record->{$field_name} ) ? 'YES' : 'NO';
+                    }
+                    when (/^percent/ixsm) {
+                        $horizontal_record->{$field_name} .= q{%};
+                    }
+                    when (/^deg/ixsm) {
+                        $horizontal_record->{$field_name} .= q{°};
+                    }
+                    default {
+                        $horizontal_record->{$field_name} .= uc substr $unit, 0,
+                          1;
+                    }
                 }
             }
         }
@@ -384,18 +387,30 @@ sub _process_transmitter_log {
 qq/Failed to process TX log: $message at record $record_num, character $position/
             );
         }
-        my $time = $vertical_record->{'Time'};
-        my $date = $vertical_record->{'Date'} . q{/} . localtime->year;
-        my $value =
-          $vertical_record->{'Current Value'} + 0;   # coerce this into a number
-        my $key =
-            $vertical_record->{'Type of Signal'}
-          . $vertical_record->{'Channel number'};
-        my $field_name = $CHANNELS->{$key}{'Description'}
-          || qq/Channel $vertical_record->{'Channel number'}/;
+        if ( $vertical_record->{'Type of alarm'} eq 'P' ) {    # periodic log
+            my $time = $vertical_record->{'Time'};
+            my $date = $vertical_record->{'Date'} . q{/} . localtime->year;
 
-        my $timestamp = qq/$date $time/;
-        $horizontal_records->{$timestamp}{$field_name} = $value;
+            my $value;
+
+            # if the value is all "?", no reading was taken
+            if ( $vertical_record->{'Current Value'} =~ /^[?]+$/xsm ) {
+                $value = q{N/A};
+            }
+            else {
+                $value =
+                  $vertical_record->{'Current Value'} +
+                  0;    # coerce this into a number
+            }
+            my $key =
+                $vertical_record->{'Type of Signal'}
+              . $vertical_record->{'Channel number'};
+            my $field_name = $CHANNELS->{$key}{'Description'}
+              || qq/Channel $vertical_record->{'Channel number'}/;
+
+            my $timestamp = qq/$date $time/;
+            $horizontal_records->{$timestamp}{$field_name} = $value;
+        }
     }
 
     return $horizontal_records;

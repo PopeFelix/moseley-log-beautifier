@@ -31,7 +31,7 @@ use File::Temp;
 use Sys::Syslog qw/:standard :macros/;
 use File::Slurp;
 
-our $VERSION = 1.41;
+our $VERSION = 1.42;
 
 Readonly my $EMPTY          => q{};
 Readonly my $LOG_FACILITY   => Sys::Syslog::LOG_USER;
@@ -303,10 +303,14 @@ $HTML_PREAMBLE
             .header {
                 text-align: center;
             }
+            .log_date {
+            	text-align: right;
+            }
         </style>
     </head>
     <body>
         <p class="header">$header</p>
+        <p class="log_date">$args->{'log_date'}</p>
         <table>           
 END
     $html .= q{<tr>};

@@ -33,10 +33,11 @@ use File::Slurp;
 
 our $VERSION = 1.42;
 
-Readonly my $EMPTY          => q{};
-Readonly my $LOG_FACILITY   => Sys::Syslog::LOG_USER;
-Readonly my $LOG_IDENTIFIER => q/moseley-log-beautifier/;
-Readonly my $LOG_OPTIONS    => $EMPTY;
+Readonly my $EMPTY            => q{};
+Readonly my $LOG_FACILITY     => Sys::Syslog::LOG_USER;
+Readonly my $LOG_IDENTIFIER   => q/moseley-log-beautifier/;
+Readonly my $LOG_OPTIONS      => $EMPTY;
+Readonly my $FIELD_WIDTH_TEXT => 8;
 
 BEGIN {    # Start logging immediately
     openlog( $LOG_IDENTIFIER, $LOG_OPTIONS, $LOG_FACILITY );
@@ -352,16 +353,28 @@ sub _print_as_text {
     my @column_headings = @{ shift $args->{'data'} };
     my @rows            = @{ $args->{'data'} };
 
-    my $header_format = join q{|}, (q/{]]]][[[[}/) x scalar @column_headings;
-    my $field_format  = join q{|}, (q/{]]]]]]]]}/) x scalar @column_headings;
+    my $header_field_format =
+      q/{/ . q{]} x ($FIELD_WIDTH_TEXT / 2) . q{[} x ($FIELD_WIDTH_TEXT / 2) . q/}/;
+    my $individual_field_format = q/{/ . q{]} x $FIELD_WIDTH_TEXT . q/}/;
+
+    my $header_format = join q{|},
+      ($header_field_format) x scalar @column_headings;
+    my $date_format =
+      q{ } x ( $FIELD_WIDTH_TEXT * scalar @column_headings ) . q/{>>>>>>>>>>}/;
+    my $field_format = join q{|},
+      ($individual_field_format) x scalar @column_headings;
 
     # formatting starts with headers followed by double line
-    my @format_data = ( $header_format, @column_headings, );
+    my @format_data =
+      ( $date_format, $args->{'log_date'}, $header_format, @column_headings, );
     push @format_data, join q{|}, (q/==========/) x scalar @column_headings;
+
     foreach my $row (@rows) {
         push @format_data, ( $field_format, @{$row} );
     }
-    my $text = form @format_data;
+    my $text = $header;
+    $text .= form @format_data;
+    $text .= $footer;
 
     my ( $fh, $tempfile ) = File::Temp::tempfile;
     $fh->binmode(q{:crlf});

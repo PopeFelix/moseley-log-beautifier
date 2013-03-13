@@ -9,43 +9,33 @@
 
 use strict;
 use warnings;
-
-use feature qw/switch/;
-use autodie;
-use charnames q/:full/;
+use Carp qw/carp croak/;
+use Readonly;
 use English qw/-no_match_vars/;
-use Text::CSV_XS;
-use Time::Piece;
 use Config::Tiny;
 use Readonly;
 use Win32::OLE;
 use Win32::OLE::Const 'Microsoft Internet Controls';
 use Win32::OLE::Variant;
-use Carp qw/carp croak/;
 use File::Spec;
 use Clone qw/clone/;
 use Cwd;
-use File::Copy;
-use Perl6::Form;
-use File::Temp;
 use Sys::Syslog qw/:standard :macros/;
-use File::Slurp;
+use File::Temp;
+use Moseley::LogBeautifier;
 
-our $VERSION = 1.42;
+our $VERSION = 2.0;
 
-Readonly my $EMPTY            => q{};
-Readonly my $LOG_FACILITY     => Sys::Syslog::LOG_USER;
-Readonly my $LOG_IDENTIFIER   => q/moseley-log-beautifier/;
-Readonly my $LOG_OPTIONS      => $EMPTY;
-Readonly my $FIELD_WIDTH_TEXT => 8;
+Readonly my $EMPTY          => q{};
+Readonly my $LOG_FACILITY   => Sys::Syslog::LOG_USER;
+Readonly my $LOG_IDENTIFIER => q/moseley-log-beautifier/;
+Readonly my $LOG_OPTIONS    => $EMPTY;
 
 BEGIN {    # Start logging immediately
     openlog( $LOG_IDENTIFIER, $LOG_OPTIONS, $LOG_FACILITY );
 }
 
 Readonly my $FUNCTION_NAME_POSITION => 3;
-Readonly my $HTML_PREAMBLE =>
-q{<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">};
 
 # constants used with Internet Explorer OLE from Vc7/PlatformSDK/Include/MsHtmHst.h :
 Readonly my $PRINT_DONTBOTHERUSER    => 1;
@@ -75,14 +65,6 @@ Readonly my $CONFIG => eval { get_configuration($CONFIG_FILE); } or do {
     _error_exit($message);
 };
 
-Readonly my $CHANNELS => eval {
-    get_channels(
-        File::Spec->rel2abs( $CONFIG->{'_'}{'channels_file'}, @CONFIG_PATH ) );
-} or do {
-    my $message = qq/Error reading channels: $EVAL_ERROR/;
-    _error_exit($message);
-};
-
 main();
 
 exit 0;
@@ -94,167 +76,37 @@ sub main {
         q/Log.txt/ );
     syslog( LOG_INFO, qq/Begin run on file "$transmitter_log"/ );
 
-    my $fh;
-    eval {
-        open $fh, '<', $transmitter_log;
-        1;
-    } or _error_exit(qq/Failed to open TX log: $EVAL_ERROR/);
-
-    my $processed_records = eval { _process_transmitter_log($fh); }
-      or _error_exit(qq/Failed to process TX logs: $EVAL_ERROR/);
-    eval {
-        close $fh;
-        1;
-    } or _error_exit(qq/Failed to close TX log: $EVAL_ERROR/);
-
-    my $log_date = [ sort keys %{$processed_records} ]->[0];
-    $log_date =~ s/(\d{2}.\d{2}.\d{4}).+/$1/xsm;
-
-    my $record_count = eval {
-        print_processed_logs(
-            { 'log_date' => $log_date, 'data' => $processed_records } );
-    };
-    if ( !defined $record_count ) {
-        _error_exit(qq/Failed to print TX logs: $EVAL_ERROR/);
-    }
-    elsif ( $record_count == 0 ) {
-        _error_exit(
-qq/Zero horizontal records created from raw TX log file "$transmitter_log"/
+    my $beautifier = eval {
+        Moseley::LogBeautifier->new(
+            {
+                'filename'      => $transmitter_log,
+                'channels_file' => $CONFIG->{'_'}{'channels_file'},
+                'header_file'   => $CONFIG->{'_'}{'header_file'},
+                'footer_file'   => $CONFIG->{'_'}{'footer_file'},
+                'field_order'   => $CONFIG->{'_'}{'field_order'},
+            }
         );
-    }
-    else {
-        syslog( LOG_INFO,
-qq/TX logs processed successfully for $log_date.  $record_count records./
-        );
-    }
-    return 1;
-}
+    } or error_exit(qq/Failed to instantiate LogBeautifier: $EVAL_ERROR/);
 
-# my $record_count = print_processed_logs({ 'log_date' => $date, 'log_data' => \@data });
-#
-# Print out processed logs.
-#
-# Expects args in a hashref with keys:
-## "log_date" Date that will be printed on the first line of the printout, under the header
-## "data" An arrayref of arrayrefs (i.e. 2-D arrayref)  This is the data that will be printed.
-#
-# Returns number of rows log data have been processed into
-sub print_processed_logs {
-    my $args = shift;
-
-    if ( ref $args ne q/HASH/ ) {
-        croak(
-            sprintf q/Usage: %s <hashref>/,
-            ( caller 0 )[$FUNCTION_NAME_POSITION]
-        );
-    }
-    foreach my $required_key (qw/log_date data/) {
-        if ( !$args->{$required_key} ) {
-            croak(qq/Missing required key '$required_key' in args/);
-        }
-    }
-    my $print_args = {
-        'log_date' => $args->{'log_date'},
-        'data'     => format_tabular( $args->{'data'} ),
-    };
+    my $record_count;
 
     if ( $CONFIG->{'_'}{'print_with_ie'} ) {
-        _print_with_internet_explorer($print_args);
-        syslog( LOG_DEBUG, q/Printed with IE/ );
+        my $html = $beautifier->generate_html_output();
+        $record_count = print_with_internet_explorer($html);
+        syslog( LOG_DEBUG, qq/Printed $record_count records with IE/ );
     }
     else {
-        _print_as_text($print_args);
-        syslog( LOG_DEBUG, q/Printed as text/ );
+        my $text = $beautifier->generate_text_output();
+        $record_count = print_as_text($text);
+        syslog( LOG_DEBUG, qq/Printed $record_count records as text/ );
     }
-    syslog( LOG_DEBUG,
-        q/Returning record count of / . scalar @{ $print_args->{'data'} } );
-    return scalar @{ $print_args->{'data'} };
+    return defined $record_count;
 }
 
-# my $tabular = format_tabular(\%records)
-sub format_tabular {
-    my $horizontal_records = shift;
+sub print_with_internet_explorer {
+    my $html = shift or croak(q/Usage: print_with_internet_explorer(<html>)/);
 
-    if ( ref $horizontal_records ne q/HASH/ ) {
-        croak(
-            sprintf q/Usage: %s <hashref>/,
-            ( caller 0 )[$FUNCTION_NAME_POSITION]
-        );
-    }
-
-    my @output_fields =
-      map { $_->{'Description'} }
-      @{$CHANNELS}{ @{ $CONFIG->{'_'}{'field_order'} } };
-
-    my $output_formats = {};
-    foreach my $key ( keys %{$CHANNELS} ) {
-        my $field_name = $CHANNELS->{$key}{'Description'};
-        my $units      = $CHANNELS->{$key}{'Units'};
-        $output_formats->{$field_name} = $units;
-    }
-
-    my @tabular =
-      ( [ q|Time|, @output_fields ] );    # initialize w/ column headings
-    foreach my $timestamp ( sort keys %{$horizontal_records} ) {
-        my $horizontal_record = $horizontal_records->{$timestamp};
-
-        # Extract the time portion of the timestamp
-        my ($time) = $timestamp =~ m/(\d{2}:\d{2}:\d{2})/xsm;
-
-        # Add units to the tabular data
-        foreach my $field_name (@output_fields) {
-            if ( $horizontal_record->{$field_name} ne q{N/A} ) {
-                my $unit = $output_formats->{$field_name};
-
-                given ($unit) {
-                    when (/^none/ixsm) {
-                        next;
-                    }
-                    when (/^bool/ixsm) {
-                        $horizontal_record->{$field_name} =
-                          ( $horizontal_record->{$field_name} ) ? 'YES' : 'NO';
-                    }
-                    when (/^percent/ixsm) {
-                        $horizontal_record->{$field_name} .= q{%};
-                    }
-                    when (/^deg/ixsm) {
-                        $horizontal_record->{$field_name} .= q{°};
-                    }
-                    default {
-                        $horizontal_record->{$field_name} .= uc substr $unit, 0,
-                          1;
-                    }
-                }
-            }
-        }
-        push @tabular, [ $time, @{$horizontal_record}{@output_fields} ];
-    }
-
-    return \@tabular;
-}
-
-# Expects arguments as a hashref with the keys:
-# # log_date: Date of the log
-# # data: an arrayref of arrayrefs.  First line is treated as column headings, following lines are treated as data.
-#
-# A double horizontal rule will be added between the column headings and the data.
-#
-sub _print_with_internet_explorer {
-    my $args = shift;
-
-    if ( ref $args ne q/HASH/ ) {
-        croak(
-            sprintf q/Usage: %s <hashref>/,
-            ( caller 0 )[$FUNCTION_NAME_POSITION]
-        );
-    }
-    foreach my $required_key (qw/log_date data/) {
-        if ( !$args->{$required_key} ) {
-            croak(qq/Missing required key '$required_key' in args/);
-        }
-    }
-    my $html     = _generate_html($args);
-    my $temp     = File::Temp->new( q{SUFFIX} => q{.html} );
+    my $temp = File::Temp->new( q{SUFFIX} => q{.html} );
     my $filename = $temp->filename;
 
     binmode $temp, q{:crlf};
@@ -280,186 +132,10 @@ sub _print_with_internet_explorer {
     return 1;
 }
 
-sub _generate_html {
-    my $args = shift;
-
-    my $header = File::Slurp::read_file( $CONFIG->{'_'}{'header_file'} );
-    my $footer = File::Slurp::read_file( $CONFIG->{'_'}{'footer_file'} );
-
-    $header =~ s/\n/<br \/>\n/gxsm;
-    $footer =~ s/\n/<br \/>\n/gxsm;
-
-    my @column_headings = @{ shift $args->{'data'} };
-    my @rows            = @{ $args->{'data'} };
-
-    my $html = <<"END";
-$HTML_PREAMBLE
-<html xmlns="http://www.w3.org/1999/xhtml">
-    <head>
-        <title></title>
-        <style type="text/css">
-            td {
-                text-align: right;
-            }
-            .header {
-                text-align: center;
-            }
-            .log_date {
-            	text-align: right;
-            }
-        </style>
-    </head>
-    <body>
-        <p class="header">$header</p>
-        <p class="log_date">$args->{'log_date'}</p>
-        <table>           
-END
-    $html .= q{<tr>};
-    $html .= join $EMPTY, map { qq{<th>$_</th>} } @column_headings;
-    $html .= qq{</tr>\n};
-
-    foreach my $row (@rows) {
-        $html .= q{<tr>};
-        $html .= join $EMPTY, map { qq{<td>$_</td>} } @{$row};
-        $html .= qq{</tr>\n};
-    }
-    $html .= <<"END";
-        </table>
-        <p>$footer</p>
-    </body>
-</html> 
-END
-    return $html;
-}
-
-sub _print_as_text {
-    my $args = shift;
-
-    if ( ref $args ne q/HASH/ ) {
-        croak(
-            sprintf q/Usage: %s <hashref>/,
-            ( caller 0 )[$FUNCTION_NAME_POSITION]
-        );
-    }
-    foreach my $required_key (qw/log_date data/) {
-        if ( !$args->{$required_key} ) {
-            croak(qq/Missing required key '$required_key' in args/);
-        }
-    }
-
-    my $header = File::Slurp::read_file( $CONFIG->{'_'}{'header_file'} );
-    my $footer = File::Slurp::read_file( $CONFIG->{'_'}{'footer_file'} );
-
-    my @column_headings = @{ shift $args->{'data'} };
-    my @rows            = @{ $args->{'data'} };
-
-    my $header_field_format =
-      q/{/ . q{]} x ($FIELD_WIDTH_TEXT / 2) . q{[} x ($FIELD_WIDTH_TEXT / 2) . q/}/;
-    my $individual_field_format = q/{/ . q{]} x $FIELD_WIDTH_TEXT . q/}/;
-
-    my $header_format = join q{|},
-      ($header_field_format) x scalar @column_headings;
-    my $date_format =
-      q{ } x ( $FIELD_WIDTH_TEXT * scalar @column_headings ) . q/{>>>>>>>>>>}/;
-    my $field_format = join q{|},
-      ($individual_field_format) x scalar @column_headings;
-
-    # formatting starts with headers followed by double line
-    my @format_data =
-      ( $date_format, $args->{'log_date'}, $header_format, @column_headings, );
-    push @format_data, join q{|}, (q/==========/) x scalar @column_headings;
-
-    foreach my $row (@rows) {
-        push @format_data, ( $field_format, @{$row} );
-    }
-    my $text = $header;
-    $text .= form @format_data;
-    $text .= $footer;
-
-    my ( $fh, $tempfile ) = File::Temp::tempfile;
-    $fh->binmode(q{:crlf});
-    $fh->print($text) or croak(qq/Failed to write to tempfile: $OS_ERROR/);
-    close $fh;
-
-    File::Copy::copy( $tempfile, $CONFIG->{'_'}{'printer_path'} )
-      or croak(qq/Failed to print file: $OS_ERROR/);
-    unlink $tempfile;
-
-    return 1;
-}
-
-sub _process_transmitter_log {
-    my $fh = shift;
-
-    my $csv = Text::CSV_XS->new( { q/allow_whitespace/ => 1, q/binary/ => 1 } );
-
-    my @column_names       = @{ $csv->getline($fh) };
-    my $horizontal_records = {};
-    my $vertical_record    = {};
-    $csv->bind_columns( \@{$vertical_record}{@column_names} );
-    while ( my $result = $csv->getline($fh) ) {
-        if ( !defined $result && !$csv->eof ) {
-            my ( $code, $message, $position, $record_num ) = $csv->error_diag();
-            croak(
-qq/Failed to process TX log: $message at record $record_num, character $position/
-            );
-        }
-        if ( $vertical_record->{'Type of alarm'} eq 'P' ) {    # periodic log
-            my $time = $vertical_record->{'Time'};
-            my $date = $vertical_record->{'Date'} . q{/} . localtime->year;
-
-            my $value;
-
-            # if the value is all "?", no reading was taken
-            if ( $vertical_record->{'Current Value'} =~ /^[?]+$/xsm ) {
-                $value = q{N/A};
-            }
-            else {
-                $value =
-                  $vertical_record->{'Current Value'} +
-                  0;    # coerce this into a number
-            }
-            my $key =
-                $vertical_record->{'Type of Signal'}
-              . $vertical_record->{'Channel number'};
-            my $field_name = $CHANNELS->{$key}{'Description'}
-              || qq/Channel $vertical_record->{'Channel number'}/;
-
-            my $timestamp = qq/$date $time/;
-            $horizontal_records->{$timestamp}{$field_name} = $value;
-        }
-    }
-
-    return $horizontal_records;
-}
-
-sub _error_exit {
+sub error_exit {
     my $message = shift;
     syslog( LOG_ERR, $message );
     croak($message);
-}
-
-sub get_channels {
-    my $channels_file         = shift;
-    my $channels_config_final = {};
-    my $channels_config       = Config::Tiny->read($channels_file);
-    if ( !$channels_config ) {
-        croak( qq/Failed to read channels config "$channels_file": /
-              . Config::Tiny->errstr );
-    }
-    foreach my $channel ( keys %{$channels_config} ) {
-        if ( $channel =~ /^channel/ixsm ) {
-            my ($channel_number) = $channel =~ m/channel\s+([[:alnum:]]+)/ixsm;
-            $channels_config_final->{ uc $channel_number } =
-              $channels_config->{$channel};
-        }
-        else {
-            croak(
-qq/Malformed key "[$channel]" in channels config "$channels_file"/
-            );
-        }
-    }
-    return $channels_config_final;
 }
 
 sub get_configuration {

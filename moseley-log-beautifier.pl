@@ -23,8 +23,10 @@ use Cwd;
 use Sys::Syslog qw/:standard :macros/;
 use File::Temp;
 use Moseley::LogBeautifier;
+use Getopt::Long qw/:config auto_help/;
+use Pod::Usage;
 
-our $VERSION = 2.0;
+our $VERSION = 2.1;
 
 Readonly my $EMPTY          => q{};
 Readonly my $LOG_FACILITY   => Sys::Syslog::LOG_USER;
@@ -42,16 +44,13 @@ Readonly my $PRINT_DONTBOTHERUSER    => 1;
 Readonly my $PRINT_WAITFORCOMPLETION => 2;
 
 Readonly my %DEFAULTS => (
-    '_' => {
-        'channels_file'       => q/channels.ini/,
-        'transmitter_log_dir' => undef,
-        'printer_path'        => undef,
-        'field_order'         => undef,
-        'print_with_ie'       => 1,
-        'header_file'         => 'header.txt',
-        'footer_file'         => 'footer.txt',
-        'log_file'            => 'log.txt',
-    },
+    'channels_file'       => q/channels.ini/,
+    'transmitter_log_dir' => undef,
+    'printer_path'        => undef,
+    'field_order'         => undef,
+    'print_with_ie'       => 1,
+    'header_file'         => 'header.txt',
+    'footer_file'         => 'footer.txt',
 );
 
 # This is an array for purposes of Windows compatibility
@@ -64,33 +63,52 @@ Readonly my $CONFIG => eval { get_configuration($CONFIG_FILE); } or do {
     my $message = qq/Error reading config: $EVAL_ERROR/;
     _error_exit($message);
 };
+$DB::single = 1;
+
+eval {
+    GetOptions(
+        $CONFIG,                 'channels_file=s',
+        'transmitter_log_dir=s', 'printer_path=s',
+        'field_order=s',         'print_with_ie=s',
+        'header_file=s',         'footer_file=s',
+        'transmitter_log=s',
+    );
+};
+if ($EVAL_ERROR) {
+    pod2usage($EVAL_ERROR);
+}
+
+
+if ( $ARGV[0] ) {
+    $CONFIG->{'transmitter_log'} = $ARGV[0];
+}
 
 main();
 
 exit 0;
 
+# Main program thread
 sub main {
 
-    my $transmitter_log = $ARGV[0]
-      || File::Spec->catfile( $CONFIG->{'_'}{'transmitter_log_dir'},
-        q/Log.txt/ );
+    my $transmitter_log = $CONFIG->{'transmitter_log'}
+      || File::Spec->catfile( $CONFIG->{'transmitter_log_dir'}, q/Log.txt/ );
     syslog( LOG_INFO, qq/Begin run on file "$transmitter_log"/ );
 
     my $beautifier = eval {
         Moseley::LogBeautifier->new(
             {
                 'filename'      => $transmitter_log,
-                'channels_file' => $CONFIG->{'_'}{'channels_file'},
-                'header_file'   => $CONFIG->{'_'}{'header_file'},
-                'footer_file'   => $CONFIG->{'_'}{'footer_file'},
-                'field_order'   => $CONFIG->{'_'}{'field_order'},
+                'channels_file' => $CONFIG->{'channels_file'},
+                'header_file'   => $CONFIG->{'header_file'},
+                'footer_file'   => $CONFIG->{'footer_file'},
+                'field_order'   => $CONFIG->{'field_order'},
             }
         );
     } or error_exit(qq/Failed to instantiate LogBeautifier: $EVAL_ERROR/);
 
     my $record_count;
 
-    if ( $CONFIG->{'_'}{'print_with_ie'} ) {
+    if ( $CONFIG->{'print_with_ie'} ) {
         my $html = $beautifier->generate_html_output();
         $record_count = print_with_internet_explorer($html);
         syslog( LOG_DEBUG, qq/Printed $record_count records with IE/ );
@@ -103,6 +121,10 @@ sub main {
     return defined $record_count;
 }
 
+# print the given HTML with Internet explorer
+#
+# Takes a single argument, which is the HTML text to print.
+# die()'s on error
 sub print_with_internet_explorer {
     my $html = shift or croak(q/Usage: print_with_internet_explorer(<html>)/);
 
@@ -132,38 +154,43 @@ sub print_with_internet_explorer {
     return 1;
 }
 
+# Write the error message to the syslog and exit
+#
+# Takes a single argument: message to write to the syslog
 sub error_exit {
     my $message = shift;
     syslog( LOG_ERR, $message );
     croak($message);
 }
 
+# Read configuration from the specified config file
+# 
+# Takes a single argument, which is the location of the config file to read.
+# Returns the parsed configuration
+# die()'s on error
 sub get_configuration {
     my $config_file = shift;
-    my $config      = Config::Tiny->read($config_file);
+
+    my $config = Config::Tiny->read($config_file)->{'_'};
     if ( !$config ) {
         croak( qq/Failed to read configuration file $config_file: /
               . Config::Tiny->errstr );
     }
-    if ( $config->{'_'}{'field_order'} ) {
-        my @field_order = split /\s+/xsm, $config->{'_'}{'field_order'};
-        $config->{'_'}{'field_order'} = \@field_order;
+    if ( $config->{'field_order'} ) {
+        my @field_order = split /\s+/xsm, $config->{'field_order'};
+        $config->{'field_order'} = \@field_order;
     }
 
+    # config file trumps defaults
     foreach my $key ( keys %DEFAULTS ) {
-        foreach my $subkey ( keys %{ $DEFAULTS{$key} } ) {
-            if (   !defined $DEFAULTS{$key}{$subkey}
-                && !$config->{$key}{$subkey} )
-            {
-                croak(qq/Required key "$key" not present in config file/);
-            }
-            if ( !defined $config->{$key}{$subkey}
-                || $config->{$key}{$subkey} eq $EMPTY )
-            {
-                $config->{$key}{$subkey} = clone( $DEFAULTS{$key}{$subkey} );
-            }
+        if ( !defined $DEFAULTS{$key} && !$config->{$key} ) {
+            croak(qq/Required key "$key" not present in config file/);
+        }
+        if ( !defined $config->{$key} || $config->{$key} eq $EMPTY ) {
+            $config->{$key} = clone( $DEFAULTS{$key} );
         }
     }
+
     return $config;
 }
 
@@ -176,79 +203,76 @@ __END__
 
 =head1 NAME
 
-moseley-log-beautifier.pl - A script to take the output from Moseley's CommServer, reformat it into a 
-more readable form, and print the reformatted output. 
+moseley-log-beautifier.pl - A script to print readable log files from a Moseley remote control system
 
 =head1 SYNOPSIS
 
-Run without arguments, it will process "Log.txt" in the transmitter logs directory.
+moseley-log-beautifier.pl [options] [log file]
 
-=head1 AUTHOR
+  Options:
+    --channels_file         location of the channels file
+    --transmitter_log_dir   directory where TX logs are stored
+    --field_order           order to print data fields in 
+    --print_with_ie         use Internet Explorer to print (disables --printer_path)
+    --printer_path          printer to use (only when --print-with-ie is not used)
+    --header_file           text file containing header to be printed with each printout
+    --footer_file           text file containing footer to be printed with each printout
+    --transmitter_log       Moseley log file to process      
 
-Kit Peters <cpeters@ucmo.edu>
+  All options override the corresponding entries in the config file
 
-=head1 ACKNOWLEDGEMENTS
+  Run without arguments, it will process "Log.txt" in the transmitter logs directory.
 
-My thanks go to all the friendly folks at Stack Overflow, particularly "ikegami" and "daotoad", who so
-patiently answered all my weird questions.
+=head1 OPTIONS
 
-=head1 BUGS AND LIMITATIONS
+=over 8
 
-The only time specifying the printer will work is if you're printing as text.  Printing with IE always
-goes to the default printer.
+=item B<--channels_file>
 
-Under Windows, log messages will show up in the Event Log with a warning message such as "The description 
-for Event ID 157 from source moseley-log-beautifier.pl [SSW:1.0.1] cannot be found. Either the component 
-that raises this event is not installed on your local computer or the installation is corrupted. You can
-install or repair the component on the local computer."  
-I believe this to be a bug in Sys::Syslog, and I have reported it as such on CPAN.
+This specifies the location of the channel definitions file.  It is expected to be in .ini format.  See L<"CHANNELS FILE"> below
 
-=head1 USAGE
+=item B<--transmitter_log_dir>
 
-To process the file "Log.txt" in the TX logs directory (specified in config file) 
+This specifies the location from which log files from CommServer will be read.
 
-perl moseley-log-beautifier.pl 
+=item B<--field_order>
 
-Run with a single argument, it will process the file specified on the command line.
+Order of fields to be displayed in the output file.  These fields should be in the same format as the 
+channel definitions, e.g. 'T33' for telemetry channel 33.
 
-perl moseley-log-beautifier.pl //path/to/Log02132013.txt
+Example: "field_order=T33 T34 T41 T48 T32 S1" will display, in order, telemetry channels 33, 34, 41, 48, 
+and 32, and status channel 1.
 
-Run with multiple arguments, it will treat the first argument as the log file to process and 
-ignore the rest of the arguments.  Don't do this; it's silly.
+=item B<--printer_path>
 
-=head1 REQUIRED ARGUMENTS 
+Path to the output printer. This is currently ignored if print_with_ie is set.
 
-None
+=item B<--print_with_ie>
 
-=head1 DESCRIPTION
+If this is set, output will be generated in HTML and printed with Internet Explorer to the host computer's
+default printer.
 
-This script is part of a larger system designed to automate KMOS's TV transmitter meter readings.  It 
-depends upon log files generated by Moseley CommServer, which is the program that actually logs the meter 
-readings.  Configuration of CommServer is beyond the scope of this document.
+=item B<--header_file>
+
+The contents of this file will be printed before the table of meter readings is printed.
+
+=item B<--footer_file>
+
+The contents of this file will be printed after the table of meter readings is printed.
+
+=back
 
 =head1 CONFIGURATION
 
-The program is configured by a configuration file "moseley-log-beautifier.ini", which is expected to be located in
-the same directory as the program is run from.  Channel configuration is stored in a file, "channels.ini" 
-(note that this can be changed in the config file), also expected (by default) to be in the same directory
-as the program is run from.
+The program is configured by a configuration file "moseley-log-beautifier.ini", which is expected to be located in the same directory as the program is run from.  Channel configuration is stored in a file, "channels.ini" (note that this can be changed in the config file), also expected (by default) to be in the same directory as the program is run from.  Note that any options specified on the command line will override the corresponding value in the config file.
 
 =head2 CONFIG FILE OPTIONS
 
-=over 4
+=over 8
 
 =item channels_file
 
-This specifies the location of the channel definitions file.  It is expected to be in .ini format, and 
-each entry is expected to be of the form
-
-    [Channel XNN]
-        Description=Some description here...
-        Units=[Degrees|Watts|Amps|Volts|Percentage|None]
-    
-Where B<X> is one of "T" (for telemetry channels) or "S" (for status channels), and B<NN> is the channel
-number.  Description is a free-form string.  Units will be printed out with the proper abbreviation, e.g. 
-"W" for watts, "%" for percentage, and E<deg> for degrees.
+This specifies the location of the channel definitions file. See L<"CHANNELS FILE"> below.
 
 =item transmitter_log_dir
 
@@ -281,9 +305,47 @@ The contents of this file will be printed after the table of meter readings is p
 
 =back
 
-=head1 OPTIONS
+=head2 CHANNELS FILE
 
-Specify a specific file to process by specifiying the full path to the file on the command line
+The channels file is expected to be in .ini format, and each entry is expected to be of the form
+
+    [Channel XNN]
+        Description=Some description here...
+        Units=[Degrees|Watts|Amps|Volts|Percentage|None]
+    
+Where B<X> is one of "T" (for telemetry channels) or "S" (for status channels), and B<NN> is the channel
+number.  Description is a free-form string.  Units will be printed out with the proper abbreviation, e.g. 
+"W" for watts, "%" for percentage, and E<deg> for degrees.
+
+=head1 AUTHOR
+
+Kit Peters <cpeters@ucmo.edu>
+
+=head1 ACKNOWLEDGEMENTS
+
+My thanks go to all the friendly folks at Stack Overflow, particularly "ikegami" and "daotoad", who so
+patiently answered all my weird questions.
+
+=head1 BUGS AND LIMITATIONS
+
+The only time specifying the printer will work is if you're printing as text.  Printing with IE always
+goes to the default printer.
+
+Under Windows, log messages will show up in the Event Log with a warning message such as "The description 
+for Event ID 157 from source moseley-log-beautifier.pl [SSW:1.0.1] cannot be found. Either the component 
+that raises this event is not installed on your local computer or the installation is corrupted. You can
+install or repair the component on the local computer."  
+I believe this to be a bug in Sys::Syslog, and I have reported it as such on CPAN.
+
+=head1 REQUIRED ARGUMENTS 
+
+None
+
+=head1 DESCRIPTION
+
+This script is part of a larger system designed to automate KMOS's TV transmitter meter readings.  It 
+depends upon log files generated by Moseley CommServer, which is the program that actually logs the meter 
+readings.  Configuration of CommServer is beyond the scope of this document.
 
 =head1 DIAGNOSTICS
 
